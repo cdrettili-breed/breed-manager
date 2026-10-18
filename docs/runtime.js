@@ -234,19 +234,25 @@
     appKeySet: () => !!DROPBOX_APP_KEY,
     async state() { const s = await dbxState(), b = await kvGet("backup") || {}; return { linked: !!s.refreshToken, account: s.account || "", lastBackupAt: b.lastBackupAt || 0, dirtySince: b.dirtySince || 0, usage: b.usage || null, lastError: b.lastError || "" }; },
     /* PKCE without a redirect: Dropbox shows a code that the user pastes back, which also works from the home-screen app */
-    async startLink() {
+    /* the link URL is prepared ahead of the tap (iOS only opens a page straight from a tap) and kept,
+       so the pasted code still matches after the app is reopened from the home screen */
+    async startLink(fresh = false) {
       if (!DROPBOX_APP_KEY) throw err("no_app_key", "Dropboxアプリの登録がまだです");
+      const cur = await kvGet("dropbox_pkce");
+      if (!fresh && cur && cur.url && cur.verifier) return cur.url;
       const verifier = b64url(crypto.getRandomValues(new Uint8Array(48)));
       const challenge = b64url(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(verifier)));
-      await kvSet("dropbox_pkce", verifier);
-      return "https://www.dropbox.com/oauth2/authorize?" + new URLSearchParams({ client_id: DROPBOX_APP_KEY, response_type: "code", code_challenge: challenge, code_challenge_method: "S256", token_access_type: "offline" });
+      const url = "https://www.dropbox.com/oauth2/authorize?" + new URLSearchParams({ client_id: DROPBOX_APP_KEY, response_type: "code", code_challenge: challenge, code_challenge_method: "S256", token_access_type: "offline" });
+      await kvSet("dropbox_pkce", { verifier, url });
+      return url;
     },
     async finishLink(code) {
-      const verifier = await kvGet("dropbox_pkce"); if (!verifier) throw err("dbx_auth", "最初からやり直してください");
+      const p = await kvGet("dropbox_pkce"), verifier = p && (p.verifier || (typeof p === "string" ? p : "")); if (!verifier) throw err("dbx_auth", "最初からやり直してください");
       const r = await fetch("https://api.dropboxapi.com/oauth2/token", { method: "POST", body: new URLSearchParams({ code: String(code).trim(), grant_type: "authorization_code", code_verifier: verifier, client_id: DROPBOX_APP_KEY }) });
       if (!r.ok) throw err("dbx_auth", "コードが正しくないか、期限が切れています");
       const j = await r.json();
       await kvSet("dropbox", { refreshToken: j.refresh_token, accessToken: j.access_token, expiresAt: Date.now() + (j.expires_in || 14400) * 1000 });
+      await kvSet("dropbox_pkce", null);
       try { const a = await dbxRpc("users/get_current_account"); const s = await dbxState(); await kvSet("dropbox", { ...s, account: a.email || a.name?.display_name || "" }); } catch {}
       window.dispatchEvent(new Event("bm:status"));
       await backup.refreshUsage().catch(() => {});

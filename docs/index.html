@@ -2474,7 +2474,7 @@ $("#chat-in").addEventListener("keydown", e => { if (e.key === "Enter" && (e.met
 document.addEventListener("keydown", e => { if (e.key === "Escape" && sheets.length) closeSheet(sheets[sheets.length - 1]); });
 
 /* ---------- app: budget / backup strip, settings, automatic backup, updates ---------- */
-const APP_VERSION = "2026-10-19-2";
+const APP_VERSION = "2026-10-19-3";
 const fmtGB = b => (b / 1e9).toFixed(b >= 1e10 ? 0 : 1) + "GB";
 const fmtTime = t => t ? new Date(t).toLocaleString("ja-JP", { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" }) : "まだありません";
 function setPill(el, { val, ratio, state }) {
@@ -2509,6 +2509,7 @@ function settingsSheet(focus) {
   const draw = async s => {
     const st = await BM.settings.get(), b = await BM.budget.status(), k = await BM.backup.state();
     const keyTail = st.apiKey ? "…" + st.apiKey.slice(-4) : "";
+    if (BM.backup.appKeySet() && !k.linked) { try { linkUrl = await BM.backup.startLink(); } catch { linkUrl = ""; } }
     s.body.innerHTML = `
       <section class="setsec" id="sec-budget"><h3>チャット（Claude API）</h3>
         <div class="field"><label for="st-key">APIキー ${st.apiKey ? `<span class="pill s-sale">設定済み ${esc(keyTail)}</span>` : `<span class="pill s-hold">未設定</span>`}</label>
@@ -2529,8 +2530,10 @@ function settingsSheet(focus) {
         ${!BM.backup.appKeySet() ? `<p class="note" style="margin:0">Dropboxとつなぐ準備中です（アプリの登録がまだです）。</p>`
           : !k.linked ? `
           <p class="note" style="margin:0">ご自身のDropboxとつなぐと、使った翌日の6時以降に最初に開いたとき、自動でバックアップします。</p>
-          <button class="btn primary block abtn" data-sx="link">Dropboxとつなぐ</button>
-          ${linkUrl ? `<p class="note">開いたDropboxの画面で「許可」を押すと、コードが表示されます。そのコードをここに貼ってください。</p><div class="idrow"><input id="st-code" autocomplete="off" placeholder="表示されたコード" aria-label="Dropboxのコード"><button class="btn" data-sx="code">決定</button></div>` : ""}`
+          <a class="btn primary block abtn" href="${esc(linkUrl)}" target="_blank" rel="noopener" style="display:flex;align-items:center;justify-content:center;text-decoration:none">① Dropboxを開いて「許可」を押す</a>
+          <p class="note" style="margin:0">② 表示されたコードを長押しでコピーし、ホーム画面の「Breed」に戻ります（この画面は閉じずに開いたままで大丈夫です）。</p>
+          <div class="field"><label for="st-code">③ コードを貼り付けて「決定」</label><div class="idrow"><input id="st-code" autocomplete="off" autocapitalize="off" placeholder="表示されたコード" aria-label="Dropboxのコード"><button class="btn" data-sx="code">決定</button></div></div>
+          <button class="btn sm" data-sx="relink" style="align-self:flex-start">うまくいかないときは、最初からやり直す</button>`
           : `
           <p class="note" style="margin:0">つないでいるアカウント: ${esc(k.account || "Dropbox")}</p>
           <div class="field"><label>Dropboxの使用量</label><div class="meter"><i style="width:${k.usage ? Math.min(100, Math.round(k.usage.ratio * 100)) : 0}%;${k.usage && k.usage.ratio >= 0.8 ? "background:var(--warn)" : ""}"></i></div>
@@ -2578,7 +2581,7 @@ function settingsSheet(focus) {
         if (a === "key") { const v = $("#st-key", s.body).value.trim(); if (!v) { toast("APIキーを入力してください"); return; } await BM.settings.set({ apiKey: v }); toast("APIキーを保存しました"); }
         else if (a === "budget") { const v = Math.max(0, Math.round(toNum($("#st-budget", s.body).value) ?? 0)); await BM.settings.set({ budgetYen: v }); toast("予算を保存しました"); }
         else if (a === "fx") { const v = toNum($("#st-fx", s.body).value); if (!v || v < 50) { toast("為替は数字で入力してください"); return; } await BM.settings.set({ fxRate: v }); toast("保存しました"); }
-        else if (a === "link") { linkUrl = await BM.backup.startLink(); window.open(linkUrl, "_blank"); }
+        else if (a === "relink") { linkUrl = await BM.backup.startLink(true); toast("もう一度①から進めてください"); }
         else if (a === "code") { const v = $("#st-code", s.body).value.trim(); if (!v) return; b.disabled = true; await BM.backup.finishLink(v); linkUrl = ""; toast("Dropboxとつなぎました"); runBackup(true); }
         else if (a === "now") { b.disabled = true; b.textContent = "バックアップ中…"; await runBackup(true); }
         else if (a === "list") {
