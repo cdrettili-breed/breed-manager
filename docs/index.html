@@ -1724,6 +1724,7 @@ function wholesaleSheet() {
   const draw = async s => {
     const g = st.id ? await getRec("geckos", st.id).catch(() => null) : null;
     const items = catalogItems().slice().sort((a, b) => (a.wno ?? 0) - (b.wno ?? 0));
+    const pub = await BM.catalog.state();
     const inList = g && catalogIds().has(g.id);
     if (g && st.price === "" && g.wholesalePrice != null) st.price = String(g.wholesalePrice);
     s.body.innerHTML = `
@@ -1742,7 +1743,9 @@ function wholesaleSheet() {
       ${items.length ? `<div class="list">${items.map(x => `<div class="row" style="grid-template-columns:auto auto minmax(0,1fr) auto"><span class="pkno">${esc(x.wno ?? "")}</span><span class="thumb">${x.photos && x.photos[0] ? `<img src="_blob/${esc(x.photos[0])}" alt="" loading="lazy">` : ""}</span><span class="rmain"><span class="rmorph">${esc(x.morph)}</span><span class="rsub"><button class="idlink" data-open="${esc(x.id)}">${esc(x.id)}</button> ${esc(x.birthDate || "")} · ${yen(x.price)}</span></span><button class="btn sm" data-wdel="${esc(x.id)}">外す</button></div>`).join("")}</div>
         <p class="note">卸の番号は、いま掲載している個体に1から順に振られます。外すと番号は詰めて振り直されます。</p>`
         : `<div class="empty">まだありません。</div>`}
-      <div class="botacts"><button class="btn abtn primary" data-wq="view">カタログを見る</button><button class="btn abtn" data-wq="refresh">最新の情報に更新</button></div>
+      <div class="botacts"><button class="btn abtn" data-wq="view">カタログを見る</button><button class="btn abtn" data-wq="refresh">最新の情報に更新</button></div>
+      <button class="btn abtn primary block" data-wq="publish" style="margin-top:8px">お客様用ページに公開</button>
+      <p class="note">公開ページ: <span class="mono" style="user-select:all">${esc(BM.catalog.url)}</span> <button class="idlink" data-wq="copy" style="font-family:inherit">コピー</button><br>前回の公開: ${pub.at ? esc(fmtTime(pub.at)) + "（" + pub.count + "頭）" : "まだありません"}。公開してから1〜2分でページに反映されます。</p>
       <p class="note">「最新の情報に更新」で、モルフや写真の変更を反映し、販売済み・死亡の個体をリストから外します。</p>`;
   };
   const refresh = s => { const a = document.activeElement; if (a && a.tagName === "INPUT" && s.el.contains(a)) return; const p = $("#wq-price", s.body); if (p) st.price = p.value; draw(s); };
@@ -1760,6 +1763,13 @@ function wholesaleSheet() {
       if (a === "scan") return startScan(id => { if (collOf(id) !== "geckos") throw new Error("個体のQRではありません（" + id + "）"); st.id = id; st.price = ""; draw(s); });
       if (a === "clear") { st.id = ""; st.price = ""; draw(s); return; }
       if (a === "view") return catalogPreview();
+      if (a === "copy") { try { await navigator.clipboard.writeText(BM.catalog.url); toast("URLをコピーしました"); } catch { toast(BM.catalog.url); } return; }
+      if (a === "publish") {
+        b.disabled = true; const label = b.textContent; b.textContent = "公開しています…";
+        try { const r = await BM.catalog.publish(S.catalog, (n, all) => { b.textContent = `写真を送っています ${n}/${all}`; }); toast(r.count + "頭のカタログを公開しました。1〜2分で反映されます"); draw(s); }
+        catch (x) { toast(x.message); b.disabled = false; b.textContent = label; if (x.code === "no_gh" || x.code === "gh_auth") settingsSheet("catalog"); }
+        return;
+      }
       if (a === "refresh") { b.disabled = true; try { const n = await catalogRefresh(); toast(n + "頭の情報を更新しました"); draw(s); } catch (x) { toast(x.message); b.disabled = false; } return; }
       if (a === "add") {
         const p = $("#wq-price", s.body); st.price = p.value; const err = $(".form-err", s.body); err.hidden = true; b.disabled = true;
@@ -2474,7 +2484,7 @@ $("#chat-in").addEventListener("keydown", e => { if (e.key === "Enter" && (e.met
 document.addEventListener("keydown", e => { if (e.key === "Escape" && sheets.length) closeSheet(sheets[sheets.length - 1]); });
 
 /* ---------- app: budget / backup strip, settings, automatic backup, updates ---------- */
-const APP_VERSION = "2026-10-19-3";
+const APP_VERSION = "2026-10-19-4";
 const fmtGB = b => (b / 1e9).toFixed(b >= 1e10 ? 0 : 1) + "GB";
 const fmtTime = t => t ? new Date(t).toLocaleString("ja-JP", { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" }) : "まだありません";
 function setPill(el, { val, ratio, state }) {
@@ -2545,6 +2555,11 @@ function settingsSheet(focus) {
           <button class="btn sm" data-sx="unlink" style="align-self:flex-start">Dropboxとのつなぎを外す</button>`}
         <p class="note">売れてから1年たった個体の写真はバックアップから外します（iPhoneの中には残ります）。</p>
       </section>
+      <section class="setsec" id="sec-catalog"><h3>卸カタログの公開（GitHub）</h3>
+        <div class="field"><label for="st-gh">GitHubの鍵 ${st.ghToken ? `<span class="pill s-sale">設定済み …${esc(st.ghToken.slice(-4))}</span>` : `<span class="pill s-hold">未設定</span>`}</label>
+          <div class="idrow"><input id="st-gh" type="password" autocomplete="off" placeholder="${st.ghToken ? "変えるときだけ入力" : "github_pat_…"}" aria-label="GitHubの鍵"><button class="btn" data-sx="gh">保存</button></div>
+          <p class="note">卸モードの「お客様用ページに公開」で使います。鍵はこのiPhoneの中にだけ保存されます。公開ページ: <span class="mono">${esc(BM.catalog.url)}</span></p></div>
+      </section>
       <section class="setsec"><h3>データ</h3>
         <div class="botacts" style="margin-top:0"><button class="btn abtn" data-sx="export">データを書き出す</button><button class="btn abtn" data-sx="import">${armedImport ? "もう一度で読み込む" : "データを読み込む"}</button></div>
         <p class="note">読み込むと、今の台帳はファイルの内容に置き換わります（写真は含みません）。</p>
@@ -2580,6 +2595,7 @@ function settingsSheet(focus) {
       try {
         if (a === "key") { const v = $("#st-key", s.body).value.trim(); if (!v) { toast("APIキーを入力してください"); return; } await BM.settings.set({ apiKey: v }); toast("APIキーを保存しました"); }
         else if (a === "budget") { const v = Math.max(0, Math.round(toNum($("#st-budget", s.body).value) ?? 0)); await BM.settings.set({ budgetYen: v }); toast("予算を保存しました"); }
+        else if (a === "gh") { const v = $("#st-gh", s.body).value.trim(); if (!v) { toast("鍵を入力してください"); return; } await BM.settings.set({ ghToken: v }); toast("GitHubの鍵を保存しました"); }
         else if (a === "fx") { const v = toNum($("#st-fx", s.body).value); if (!v || v < 50) { toast("為替は数字で入力してください"); return; } await BM.settings.set({ fxRate: v }); toast("保存しました"); }
         else if (a === "relink") { linkUrl = await BM.backup.startLink(true); toast("もう一度①から進めてください"); }
         else if (a === "code") { const v = $("#st-code", s.body).value.trim(); if (!v) return; b.disabled = true; await BM.backup.finishLink(v); linkUrl = ""; toast("Dropboxとつなぎました"); runBackup(true); }
