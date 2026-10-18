@@ -196,7 +196,7 @@
   });
 
   /* ---------- backup to the user's own Dropbox (app folder) ---------- */
-  const DROPBOX_APP_KEY = ""; // set once the Dropbox app is registered (public value; PKCE needs no secret)
+  const DROPBOX_APP_KEY = "niase0v78ostvxm"; // public value; PKCE needs no secret
   const b64url = buf => btoa(String.fromCharCode(...new Uint8Array(buf))).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
   const dbxState = async () => (await kvGet("dropbox")) || {};
   async function dbxToken() {
