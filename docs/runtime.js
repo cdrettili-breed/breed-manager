@@ -116,6 +116,16 @@
       return { month: monthKey(), usd, spentYen, budgetYen, remainingYen: budgetYen - spentYen, ratio: budgetYen ? spentYen / budgetYen : 0, hasKey: !!st.apiKey };
     },
     async add(usd) { const use = await kvGet("usage") || {}, k = monthKey(); use[k] = (use[k] || 0) + usd; await kvSet("usage", use); window.dispatchEvent(new Event("bm:status")); },
+    /* the yen rate follows the market: refreshed at most twice a day, the last rate is kept when offline */
+    async refreshFx(force) {
+      const st = await settings.get();
+      if (!force && st.fxAt && Date.now() - Date.parse(st.fxAt) < 12 * 3600e3) return st.fxRate;
+      const r = await fetch("https://open.er-api.com/v6/latest/USD", { cache: "no-store" });
+      const j = r.ok ? await r.json() : null, jpy = Number(j && j.rates && j.rates.JPY);
+      if (!(jpy > 50 && jpy < 500)) throw err("fx", "為替レートを取得できませんでした");
+      await settings.set({ fxRate: Math.round(jpy * 100) / 100, fxAt: new Date().toISOString() });
+      return jpy;
+    },
   };
 
   /* ---------- sample: chat through the Claude API ---------- */
