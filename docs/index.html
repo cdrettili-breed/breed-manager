@@ -401,6 +401,7 @@ details.more>div{padding:0 12px 12px;display:flex;flex-direction:column;gap:12px
 <input type="file" id="photo-cam" accept="image/*" capture="environment" hidden>
 <div id="catalog-page" hidden></div>
 
+<script src="config.js"></script>
 <script src="runtime.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcode-generator/1.4.4/qrcode.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/jsqr@1.4.0/dist/jsQR.min.js"></script>
@@ -1374,7 +1375,7 @@ function salesStats(sales) {
 /* ---------- subscriptions ---------- */
 function setConn(state, text) { const c = $("#conn"); c.className = "conn " + state; $("span", c).textContent = text; }
 let rq = 0;
-function schedule() { cancelAnimationFrame(rq); rq = requestAnimationFrame(() => { renderView(); renderSugg(); for (const s of sheets) s.refresh?.(s); }); }
+function schedule() { cancelAnimationFrame(rq); rq = requestAnimationFrame(() => { renderView(); renderSugg(); for (const s of sheets) s.refresh?.(s); }); if (self.BM_PUSH_URL) try { pushSoon(); } catch {} }
 function subscribe(db) {
   const cutoff = addDays(today(), -450);
   const onErr = e => { setConn("bad", "同期エラー"); console.warn(e); };
@@ -3181,7 +3182,7 @@ $("#chat-in").addEventListener("keydown", e => { if (e.key === "Enter" && (e.met
 document.addEventListener("keydown", e => { if (e.key === "Escape" && sheets.length) closeSheet(sheets[sheets.length - 1]); });
 
 /* ---------- app: budget / backup strip, settings, automatic backup, updates ---------- */
-const APP_VERSION = "2026-10-22-2";
+const APP_VERSION = "2026-10-22-3";
 const fmtGB = b => (b / 1e9).toFixed(b >= 1e10 ? 0 : 1) + "GB";
 const fmtTime = t => t ? new Date(t).toLocaleString("ja-JP", { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" }) : "まだありません";
 function setPill(el, { val, ratio, state }) {
@@ -3210,6 +3211,92 @@ async function maybeAutoBackup() {
     if (await BM.backup.isDue()) { await runBackup(false); toast("前回までの台帳をDropboxにバックアップしました"); }
     else { const k = await BM.backup.state(); if (k.linked && (!k.usage || Date.now() - k.usage.at > 864e5)) await BM.backup.refreshUsage(); }
   } catch (e) { console.warn("auto backup", e); }
+}
+/* ---------- push reminders ----------
+   The ledger stays on the iPhone; only the coming reminders (date, title, one line) and the push subscription are
+   sent to the push server (push-worker/worker.js), which sends one notification on the morning of each day that has
+   any. The list is rebuilt from the ledger and re-sent whenever it changes. */
+const PUSH_URL = self.BM_PUSH_URL || "";
+const NOTIFY_DEF = { on: false, hour: 8, lay: true, hatch: true, temp: true };
+const notifyPrefs = () => ({ ...NOTIFY_DEF, ...(pref("notify", {}) || {}) });
+const pushReady = () => !!PUSH_URL && "serviceWorker" in navigator && "PushManager" in window && "Notification" in window;
+function pushItems() {
+  const p = notifyPrefs(), t = today(), end = addDays(t, 60), out = [];
+  const add = (d, k, title, body) => { if (d >= t && d <= end) out.push({ d, k: k + "@" + d, title, body }); };
+  if (p.lay) for (const x of layingFemales()) {
+    const who = "♀" + x.damId + (mz(S.geckos.get(x.damId)?.morph) ? " " + mz(S.geckos.get(x.damId).morph) : "");
+    add(addDays(x.next, -1), "lay:" + x.pairing.id, "明日は産卵の目安", who + "（" + x.pairing.id + "）");
+    add(x.next, "lay:" + x.pairing.id, "今日は産卵の目安", who + "（" + x.pairing.id + "）");
+  }
+  for (const g of incubatingGroups()) {
+    const c = S.clutches.get(g.cid) || g.e0, n = g.legacy ? c.eggs : g.eggs.length, what = g.cid + "（卵" + n + "個・♀" + c.damId + "）";
+    if (p.hatch) { add(addDays(g.exp, -2), "hatch:" + g.cid, "孵化予定まであと2日", what); add(g.exp, "hatch:" + g.cid, "今日は孵化予定日", what); }
+    if (p.temp) for (const s of planOf(c)) {
+      const d = addDays(c.layDate, s.day);
+      add(addDays(d, -1), "temp:" + g.cid + ":" + s.day, "明日 " + s.t + "℃に変更", what);
+      add(d, "temp:" + g.cid + ":" + s.day, "今日 " + s.t + "℃に変更", what);
+    }
+  }
+  return out.sort((a, b) => a.d.localeCompare(b.d)).slice(0, 300);
+}
+const b64uBytes = s => { const b = atob(s.replace(/-/g, "+").replace(/_/g, "/")); return Uint8Array.from(b, c => c.charCodeAt(0)); };
+async function pushSub(create) {
+  const reg = await navigator.serviceWorker.ready;
+  let sub = await reg.pushManager.getSubscription();
+  if (!sub && create) {
+    const { key } = await (await fetch(PUSH_URL + "/vapid")).json();
+    sub = await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: b64uBytes(key) });
+  }
+  return sub;
+}
+async function pushPost(path, body) {
+  const r = await fetch(PUSH_URL + path, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+  const j = await r.json().catch(() => ({})); if (!r.ok) throw new Error("通知のサーバーに送れませんでした（" + (j.error || r.status) + "）"); return j;
+}
+/* re-send the reminders when they (or the notification settings) changed; force for the first time and the test */
+let pushTimer = 0;
+async function pushSync(force) {
+  const p = notifyPrefs(); if (!p.on || !pushReady() || !S.ready) return;
+  const items = pushItems(), body = { hour: p.hour, offset: new Date().getTimezoneOffset(), items };
+  const sig = JSON.stringify(body);
+  if (!force && lsGet("leopa.pushSig", "") === sig) return;
+  const sub = await pushSub(false); if (!sub) return;
+  await pushPost("/sync", { ...body, subscription: sub.toJSON() });
+  lsSet("leopa.pushSig", sig);
+}
+const pushSoon = () => { clearTimeout(pushTimer); pushTimer = setTimeout(() => pushSync().catch(e => console.warn("push", e)), 4000); };
+async function pushEnable() {
+  if (!pushReady()) throw new Error(PUSH_URL ? "この画面では通知を使えません。ホーム画面のアプリから開いてください（iOS 16.4以降）" : "通知のサーバーがまだ準備中です");
+  const perm = await Notification.requestPermission();
+  if (perm !== "granted") throw new Error("通知が許可されませんでした。iPhoneの「設定 → 通知 → Breed」で許可してください");
+  await pushSub(true);
+  setPref("notify", { ...notifyPrefs(), on: true });
+  await pushSync(true);
+}
+async function pushDisable() {
+  const sub = await pushSub(false).catch(() => null);
+  if (sub) { await pushPost("/unsubscribe", { endpoint: sub.endpoint }).catch(() => {}); await sub.unsubscribe().catch(() => {}); }
+  setPref("notify", { ...notifyPrefs(), on: false }); lsSet("leopa.pushSig", "");
+}
+async function pushTest() {
+  const sub = await pushSub(false); if (!sub) throw new Error("先に通知をオンにしてください");
+  const r = await pushPost("/test", { endpoint: sub.endpoint });
+  if (r.status && r.status >= 300) throw new Error("通知を送れませんでした（" + r.status + "）。いったんオフにして、もう一度オンにしてください");
+}
+function notifySection() {
+  const p = notifyPrefs(), items = p.on ? pushItems() : [];
+  const hours = Array.from({ length: 17 }, (_, i) => i + 5);
+  return `<section class="setsec" id="sec-notify"><h3>通知</h3>
+    ${!PUSH_URL ? `<p class="note" style="margin:0">通知のサーバーを準備中です。準備ができると、ここから通知をオンにできます。</p>`
+      : `<p class="note" style="margin:0">毎朝、その日の予定（産卵の目安・孵化予定・温度変更）をiPhoneに通知します。通知のために、予定の日付と短い文（例「明日 28.5℃に変更 C26-005」）だけを通知のサーバーに送ります。台帳そのものは送りません。</p>
+      ${p.on ? `<div class="infobox" style="margin:0">通知はオンです。この先60日の予定 ${items.length}件${items[0] ? `（次は ${esc(md(items[0].d))} ${esc(items[0].title)}）` : ""}</div>` : ""}
+      <div class="botacts" style="margin-top:0">${p.on ? `<button class="btn abtn" data-sx="ntest">テスト通知</button><button class="btn abtn" data-sx="noff">通知をオフ</button>` : `<button class="btn abtn primary" data-sx="non">通知をオンにする</button>`}</div>
+      <div class="field"><label for="st-nhour">通知する時刻</label><select id="st-nhour">${hours.map(h => `<option value="${h}"${h === Number(p.hour) ? " selected" : ""}>${h}:00ごろ</option>`).join("")}</select></div>
+      <label class="toggle"><input type="checkbox" id="st-nlay" ${p.lay ? "checked" : ""}>産卵の目安（前日と当日）</label>
+      <label class="toggle"><input type="checkbox" id="st-nhatch" ${p.hatch ? "checked" : ""}>孵化予定（2日前と当日）</label>
+      <label class="toggle"><input type="checkbox" id="st-ntemp" ${p.temp ? "checked" : ""}>温度変更（前日と当日）</label>
+      <p class="note" style="margin:0">ホーム画面のアプリ（iOS 16.4以降）で使えます。時刻は1時間ほど遅れることがあります。</p>`}
+  </section>`;
 }
 /* a temperature plan: start temperature, a change on day N, and optionally a second change */
 function tempPlanForm() {
@@ -3298,6 +3385,7 @@ function settingsSheet(focus) {
       <section class="setsec"><h3>写真の読み取り</h3>
         <label class="toggle"><input type="checkbox" id="st-photoscan" ${pref("photoScan", false) ? "checked" : ""}>カメラ映像ではなく、写真を撮って読み取る</label>
       </section>
+      ${notifySection()}
       <section class="setsec" id="sec-temps"><h3>孵卵温度</h3>
         <div class="field"><label>温度の選択肢（産卵の記録で選びます）</label>
           <div class="chips wrap">${tempOptions().map(t => `<button class="chip" data-sx="trm" data-t="${esc(t)}" aria-label="${esc(t)}℃を外す">${esc(t)}℃ ×</button>`).join("")}</div>
@@ -3320,6 +3408,10 @@ function settingsSheet(focus) {
     draw(s);
     s.body.addEventListener("change", async e => {
       if (e.target.id === "st-photoscan") { setPref("photoScan", e.target.checked); return; }
+      if (["st-nhour", "st-nlay", "st-nhatch", "st-ntemp"].includes(e.target.id)) {
+        const p = notifyPrefs(), v = { ...p, hour: Number($("#st-nhour", s.body)?.value ?? p.hour), lay: !!$("#st-nlay", s.body)?.checked, hatch: !!$("#st-nhatch", s.body)?.checked, temp: !!$("#st-ntemp", s.body)?.checked };
+        setPref("notify", v); pushSync(true).then(() => toast("通知の設定を保存しました")).catch(x => toast(x.message)); return;
+      }
       if (e.target.id === "st-b1") { setPref("b1", e.target.checked); toast(e.target.checked ? "ラベルはB1で印刷します" : "ラベルはPDFで印刷します"); return; }
       if (e.target.id === "st-file") {
         const f = e.target.files && e.target.files[0]; if (!f) return;
@@ -3355,6 +3447,9 @@ function settingsSheet(focus) {
         else if (a === "morphs") { morphSheet(); return; }
         else if (a === "lang-ja" || a === "lang-en") { const v = a.slice(5); await saveMeta("settings", { morphLang: v }); S.settings.morphLang = v; schedule(); toast(v === "en" ? "モルフ名を英語で表示します" : "モルフ名を日本語で表示します"); }
         else if (a === "trash") { trashSheet(); return; }
+        else if (a === "non") { b.disabled = true; await pushEnable(); toast("通知をオンにしました"); }
+        else if (a === "noff") { await pushDisable(); toast("通知をオフにしました"); }
+        else if (a === "ntest") { b.disabled = true; await pushTest(); toast("テスト通知を送りました。数秒で届きます"); }
         else if (a === "tadd" || a === "trm") {
           const cur = tempOptions();
           let next;
@@ -3381,6 +3476,7 @@ if ("serviceWorker" in navigator) {
     watch(reg.installing); reg.addEventListener("updatefound", () => watch(reg.installing));
     document.addEventListener("visibilitychange", () => { if (document.visibilityState === "visible") reg.update().catch(() => {}); });
   }).catch(e => console.warn("sw", e));
+  navigator.serviceWorker.addEventListener("message", e => { if (e.data === "open-breed") setTab("breed"); });
   navigator.serviceWorker.addEventListener("controllerchange", () => { if (reloaded || !sessionStorage.getItem("bm-had-controller")) return; reloaded = true; sessionStorage.setItem("bm-updated", "1"); location.reload(); });
   if (navigator.serviceWorker.controller) sessionStorage.setItem("bm-had-controller", "1");
 }

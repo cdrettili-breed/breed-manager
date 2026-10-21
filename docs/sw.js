@@ -1,8 +1,8 @@
 /* Breed Manager service worker: keeps the app usable offline, picks up new versions on the next open,
    and serves photos stored in IndexedDB at "_blob/<id>". Bump VERSION on every release. */
-const VERSION = "2026-10-22-2";
+const VERSION = "2026-10-22-3";
 const SHELL = `bm-shell-${VERSION}`, LIBS = "bm-libs-v1";
-const SHELL_FILES = ["./", "./index.html", "./runtime.js", "./manifest.webmanifest", "./icons/icon-192.png", "./icons/icon-512.png", "./icons/apple-touch-icon.png"];
+const SHELL_FILES = ["./", "./index.html", "./config.js", "./runtime.js", "./manifest.webmanifest", "./icons/icon-192.png", "./icons/icon-512.png", "./icons/apple-touch-icon.png"];
 
 self.addEventListener("install", e => { e.waitUntil(caches.open(SHELL).then(c => c.addAll(SHELL_FILES))); });
 self.addEventListener("activate", e => {
@@ -12,6 +12,28 @@ self.addEventListener("activate", e => {
   })());
 });
 self.addEventListener("message", e => { if (e.data === "skipWaiting") self.skipWaiting(); });
+
+/* reminders: the push server sends an empty push; the text of the day's reminders is fetched from it here */
+try { importScripts("config.js"); } catch {}
+self.addEventListener("push", e => {
+  e.waitUntil((async () => {
+    let msgs = [];
+    try {
+      const sub = await self.registration.pushManager.getSubscription();
+      if (sub && self.BM_PUSH_URL) msgs = (await (await fetch(self.BM_PUSH_URL + "/pending?ep=" + encodeURIComponent(sub.endpoint), { cache: "no-store" })).json()).messages || [];
+    } catch {}
+    if (!msgs.length) msgs = [{ title: "Breed Manager", body: "今日の予定があります。アプリで確認してください。", tag: "today" }];
+    for (const m of msgs) await self.registration.showNotification(m.title || "Breed Manager", { body: m.body || "", tag: m.tag || "bm", icon: "icons/icon-192.png", badge: "icons/icon-192.png", data: { url: "./#breed" } });
+  })());
+});
+self.addEventListener("notificationclick", e => {
+  e.notification.close();
+  e.waitUntil((async () => {
+    const all = await self.clients.matchAll({ type: "window", includeUncontrolled: true });
+    for (const c of all) { if ("focus" in c) { c.postMessage("open-breed"); return c.focus(); } }
+    return self.clients.openWindow("./");
+  })());
+});
 
 const blobFromIdb = id => new Promise(res => {
   const r = indexedDB.open("breed-manager", 1);
