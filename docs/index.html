@@ -485,9 +485,9 @@ function normSex(s) {
   if (/^(♀|メス|雌|めす|female|f)$/i.test(s)) return "♀";
   return "不明";
 }
-const GFIELDS = ["name", "sex", "morph", "base", "het", "morphEn", "birthDate", "incubTemp", "origin", "breeder", "purchasePrice", "price", "wholesalePrice", "sireId", "damId", "clutchId", "eggId", "status", "grade", "breeding", "forSale",
+const GFIELDS = ["name", "sex", "morph", "base", "homo", "het", "morphEn", "birthDate", "incubTemp", "origin", "breeder", "purchasePrice", "price", "wholesalePrice", "sireId", "damId", "clutchId", "eggId", "status", "grade", "breeding", "forSale",
   "soldPrice", "soldDate", "saleChannel", "saleNotes", "deathDate", "weight", "notes", "packNo"];
-const GLABEL = { name: "呼び名", sex: "性別", morph: "モルフ", base: "ベースモルフ", het: "het", breeder: "ブリーダー", morphEn: "英語モルフ名", birthDate: "生年月日", incubTemp: "孵化温度", origin: "由来", purchasePrice: "購入価格", sireId: "父", damId: "母", clutchId: "産卵", eggId: "卵", notes: "メモ", breeding: "用途", forSale: "用途" };
+const GLABEL = { name: "呼び名", sex: "性別", morph: "モルフ", base: "ベースモルフ", homo: "homo", het: "het", breeder: "ブリーダー", morphEn: "英語モルフ名", birthDate: "生年月日", incubTemp: "孵化温度", origin: "由来", purchasePrice: "購入価格", sireId: "父", damId: "母", clutchId: "産卵", eggId: "卵", notes: "メモ", breeding: "用途", forSale: "用途" };
 function cleanGecko(x) {
   const o = {};
   for (const k of GFIELDS) {
@@ -656,12 +656,15 @@ function predictMorphs(damMorph, sireMorph, damLines, sireLines) {
   const named = vis => { const cb = comboOf(vis); return cb ? [cb.name, ...vis.filter(v => !cb.set.includes(v)).map(nameOf)] : vis.map(nameOf); };
   const out = [...groups.values()].map(gr => {
     const ln = parentLines.find(l => l.keys.every(k => gr.vis.includes(k)));
-    const label = (ln ? [ln.both ? ln.name : ln.base, ...named(gr.vis.filter(v => !ln.keys.includes(v)))] : named(gr.vis)).join(" ") || "ノーマル";
+    /* a line-named child keeps just the line name; its extra recessive genes go to homo (ストーンウォッシュ + homo エクリプス) */
+    const label = (ln ? [ln.both ? ln.name : ln.base, ...named(gr.vis.filter(v => !ln.keys.includes(v) && !(ln.both && geneOf(v.split(":")[0])?.type === "rec")))] : named(gr.vis)).join(" ") || "ノーマル";
     /* a child named by its line still records what it is genetically */
     const base = ln && ln.both ? named(gr.vis).join(" ") : "";
     const hets = Object.entries(gr.het).map(([k, hp]) => ({ name: nameOf(k), p: hp / gr.p })).filter(h => h.p > 0.001).sort((a, b) => b.p - a.p);
     const hetText = hets.map(h => (h.p > 0.995 ? "" : Math.round(h.p * 100) + "%") + "het " + h.name).join(" ");
-    return { p: gr.p, label, base, morph: ((label === "ノーマル" && !hetText) ? "ノーマル" : label + " " + hetText).trim(), hetText, combo: "" };
+    const homo = gr.vis.filter(v => geneOf(v)?.type === "rec").map(nameOf).join(" ");
+    const plus = ln && ln.both ? gr.vis.filter(v => !ln.keys.includes(v) && geneOf(v.split(":")[0])?.type === "rec").map(nameOf).join(" ") : "";
+    return { p: gr.p, label, base, homo, plus, morph: ((label === "ノーマル" && !hetText) ? "ノーマル" : label + " " + hetText).trim(), hetText, combo: "" };
   }).sort((a, b) => b.p - a.p).filter(c => c.p > 0.001);
   const traits = [...new Set([...A.traits, ...B.traits, ...A.unknown, ...B.unknown])];
   return { candidates: out.slice(0, 12), traits, parsedAny: genes.length > 0, unknown: [...new Set([...A.unknown, ...B.unknown])], lines: parentLines };
@@ -669,13 +672,13 @@ function predictMorphs(damMorph, sireMorph, damLines, sireLines) {
 /* what the genetics read for a gecko: the morph plus its het field. A gecko's own base morph replaces its line's
    registered base (this ストーンウォッシュ is ラプター), or is read alongside the morph when the morph is not a line. */
 const lineIn = g => S.lines.filter(l => fold(g.morph).includes(fold(l.name)));
-const genoOf = g => g ? [g.base && !lineIn(g).length ? g.base : "", g.morph, g.het].filter(Boolean).join(" ") : "";
+const genoOf = g => g ? [g.base && !lineIn(g).length ? g.base : "", g.morph, g.homo, g.het].filter(Boolean).join(" ") : "";
 const linesOf = g => g && g.base ? S.lines.map(l => fold(g.morph).includes(fold(l.name)) ? { ...l, base: g.base } : l) : S.lines;
 const predictFor = (dam, sire) => predictMorphs(genoOf(dam), genoOf(sire), linesOf(dam), linesOf(sire));
 const pctText = p => (p * 100).toFixed(p < 0.1 ? 1 : 0) + "%";
 function oddsHTML(pred, n = 6) {
   if (!pred.parsedAny) return `<p class="note">親のモルフから遺伝子を判定できないため、確率は出せません。</p>`;
-  return `<div class="hist">${pred.candidates.slice(0, n).map(c => `<div><span>${esc(mz(c.label))}${c.hetText ? `<br><span class="muted small">${esc(mz(c.hetText))}</span>` : ""}</span><span class="mono">${pctText(c.p)}</span></div>`).join("")}</div>`;
+  return `<div class="hist">${pred.candidates.slice(0, n).map(c => `<div><span>${esc(mz(c.label))}${c.plus ? ` <span class="muted small">+ homo ${esc(mz(c.plus))}</span>` : ""}${c.hetText ? `<br><span class="muted small">${esc(mz(c.hetText))}</span>` : ""}</span><span class="mono">${pctText(c.p)}</span></div>`).join("")}</div>`;
 }
 /* genes offered on the het buttons (a gene can be kept off them, e.g. マーブルアイ, and is still read when typed) */
 const recGenes = () => GENES.filter(g => g.type === "rec" && g.het !== false);
@@ -687,7 +690,7 @@ const cbText = g => cbOf(g) ? cbOf(g) + " CB" : "";
 
 /* ---------- state ---------- */
 const S = {
-  db: null, dl: null, assets: null, ready: false, lines: [], settings: {}, packing: { items: [] }, catalog: { items: [] }, queue: new Map(),
+  db: null, dl: null, assets: null, ready: false, lines: [], settings: {}, packing: { items: [] }, catalog: { items: [] }, shop: { items: [] }, queue: new Map(),
   geckos: new Map(), pairings: new Map(), clutches: new Map(), eggs: new Map(),
   local: new Map(), archive: null, sales: null, tab: lsGet("leopa.tab", "chat"),
   f: { q: "", use: "all", status: "", archived: false }, lastList: [], stockSort: lsGet("leopa.stockSort", "young"), stockAge: null,
@@ -822,7 +825,7 @@ async function deleteGecko(rawId) {
     return { eggBack };
   });
   await queueRemove([g.id, "card:" + g.id, "cup:" + g.id].filter(k => S.queue.has(k))).catch(() => {});
-  if (catalogIds().has(g.id)) await saveCatalog(catalogItems().filter(x => x.id !== g.id)).catch(() => {});
+  await listsDrop(g.id);
   if (packItems().some(x => x.id === g.id)) { const items = packItems().filter(x => x.id !== g.id); await saveMeta("packing", { items }).catch(() => {}); S.packing = { ...S.packing, items }; }
   schedule();
   return { id: g.id, ...r };
@@ -940,13 +943,13 @@ async function settleClutch(cid, patch, text) {
   await putRec("clutches", c.id, { ...patch, status: done ? ((m.hatched || 0) ? "孵化済" : "失敗") : "孵卵中" }, text);
 }
 async function hatchEgg(input) { const r = await _hatchEgg(input); r.queued = await maybeQueue([r.gecko.id]); return r; }
-async function _hatchEgg({ eggId, hatchDate, sex, morph, base, het, weight, notes }) {
+async function _hatchEgg({ eggId, hatchDate, sex, morph, base, homo, het, weight, notes }) {
   needDb();
   return serial(async () => {
     const e = await getRec("eggs", eggId); if (!e) throw new Error(normId(eggId) + " という卵は見つかりません");
     if (e.status !== "孵卵中") throw new Error(e.id + " はすでに「" + e.status + "」です");
     const d = toDate(hatchDate) || today();
-    const g = await _createGecko({ breeding: false, forSale: true, birthDate: d, incubTemp: e.temp ?? "", sex, morph, base: base || "", het: het || "", weight, notes, sireId: e.sireId, damId: e.damId, clutchId: e.clutchId, eggId: e.id, origin: "自家繁殖" }, `${e.id} から孵化（${daysBetween(e.layDate, d)}日）`);
+    const g = await _createGecko({ breeding: false, forSale: true, birthDate: d, incubTemp: e.temp ?? "", sex, morph, base: base || "", homo: homo || "", het: het || "", weight, notes, sireId: e.sireId, damId: e.damId, clutchId: e.clutchId, eggId: e.id, origin: "自家繁殖" }, `${e.id} から孵化（${daysBetween(e.layDate, d)}日）`);
     await putRec("eggs", e.id, { status: "孵化済", hatchDate: d, offspringId: g.id }, "孵化 → " + g.id);
     const c = await getRec("clutches", e.clutchId);
     if (c) await settleClutch(c.id, { hatched: (c.hatched || 0) + 1, offspringIds: [...(c.offspringIds || []), g.id], hatchDate: d }, `${e.id} 孵化 → ${g.id}`);
@@ -988,13 +991,13 @@ async function addPhoto(geckoId, file) {
   const blob = await new Promise((res, rej) => c.toBlob(b => b ? res(b) : rej(new Error("画像を作れませんでした")), "image/jpeg", 0.85));
   const up = await S.assets.upload(blob, { type: "image/jpeg" });
   const g2 = await serial(async () => { const g = await getRec("geckos", geckoId); return putRec("geckos", g.id, { photos: [...(g.photos || []), { id: up.id, at: nowTs() }] }, "写真を追加"); });
-  if (catalogIds().has(g2.id)) await catalogUpsert(g2).catch(e => console.warn("catalog", e));
+  await listsUpsert(g2);
   return g2;
 }
 async function removePhoto(geckoId, assetId) {
   const g = await getRec("geckos", geckoId);
   const g2 = await serial(() => putRec("geckos", g.id, { photos: (g.photos || []).filter(p => p.id !== assetId) }, "写真を削除"));
-  if (catalogIds().has(g2.id)) await catalogUpsert(g2).catch(e => console.warn("catalog", e));
+  await listsUpsert(g2);
   if (S.assets) await S.assets.delete(assetId).catch(e => console.warn("asset delete", e));
 }
 async function setLine(name, base, en) {
@@ -1159,7 +1162,7 @@ async function loadSales() {
 }
 function matchQ(g, q) {
   const toks = fold(q).split(/\s+/).filter(Boolean); if (!toks.length) return true;
-  const hay = fold([g.id, g.name, g.morph, g.base, g.het, g.breeder, g.morphEn, g.notes, g.sireId, g.damId, g.clutchId, g.eggId, g.origin, g.status, g.sex, g.grade ? "評価" + g.grade : ""].join(" "));
+  const hay = fold([g.id, g.name, g.morph, g.base, g.homo, g.het, g.breeder, g.morphEn, g.notes, g.sireId, g.damId, g.clutchId, g.eggId, g.origin, g.status, g.sex, g.grade ? "評価" + g.grade : ""].join(" "));
   return toks.every(t => hay.includes(t) || hay.includes(fold(normId(t))));
 }
 function filterGeckos(list, o) {
@@ -1174,7 +1177,7 @@ function filterGeckos(list, o) {
     matchQ(g, o.query || o.q || ""));
 }
 const sortGeckos = l => l.sort((a, b) => (isBreeding(a) === isBreeding(b) ? 0 : isBreeding(a) ? -1 : 1) || (isBreeding(a) ? a.id.localeCompare(b.id) : b.id.localeCompare(a.id)));
-const brief = g => ({ id: g.id, use: useLabel(g), sex: g.sex, morph: g.morph, base: g.base || undefined, het: g.het || undefined, breeder: g.breeder || undefined, status: g.status, grade: g.grade || undefined, birthDate: g.birthDate, ageMonths: ageMonths(g.birthDate) ?? undefined, sireId: g.sireId || undefined, damId: g.damId || undefined, eggId: g.eggId || undefined, soldPrice: g.soldPrice ?? undefined, soldDate: g.soldDate || undefined, saleChannel: g.saleChannel || undefined });
+const brief = g => ({ id: g.id, use: useLabel(g), sex: g.sex, morph: g.morph, base: g.base || undefined, homo: g.homo || undefined, het: g.het || undefined, breeder: g.breeder || undefined, status: g.status, grade: g.grade || undefined, birthDate: g.birthDate, ageMonths: ageMonths(g.birthDate) ?? undefined, sireId: g.sireId || undefined, damId: g.damId || undefined, eggId: g.eggId || undefined, soldPrice: g.soldPrice ?? undefined, soldDate: g.soldDate || undefined, saleChannel: g.saleChannel || undefined });
 function layingFemales() {
   const t = today(), byDam = new Map();
   for (const p of S.pairings.values()) if (isActivePair(p) && (!byDam.has(p.damId) || byDam.get(p.damId).date < p.date)) byDam.set(p.damId, p);
@@ -1231,6 +1234,7 @@ function subscribe(db) {
   db.doc("meta/morphs").onSnapshot(snap => { applyMorphs(snap.exists ? snap.data() : null); schedule(); }, onErr);
   db.doc("meta/settings").onSnapshot(snap => { S.settings = snap.exists ? snap.data() : {}; schedule(); }, onErr);
   db.doc("public/catalog").onSnapshot(snap => { S.catalog = snap.exists ? { items: [], ...snap.data() } : { items: [] }; schedule(); if (catalogMode) renderCatalogPage(); }, onErr);
+  db.doc("public/shop").onSnapshot(snap => { S.shop = snap.exists ? { items: [], ...snap.data() } : { items: [] }; schedule(); }, onErr);
   db.doc("meta/packing").onSnapshot(snap => { S.packing = snap.exists ? { items: [], ...snap.data() } : { items: [] }; schedule(); }, onErr);
 }
 
@@ -1268,15 +1272,26 @@ function fieldHTML(f, v) {
   if (f.type === "select") c = `<select id="${id}">${f.options.map(o => { const [val, lab] = optPair(o); return `<option value="${esc(val)}"${String(val) === String(v) ? " selected" : ""}>${esc(lab)}</option>`; }).join("")}</select>`;
   else if (f.type === "seg") c = `<div class="seg" role="radiogroup" aria-label="${esc(f.label)}">${f.options.map((o, i) => { const [val, lab] = optPair(o); return `<label><input type="radio" name="${id}" id="${id}-${i}" value="${esc(val)}"${String(val) === String(v) ? " checked" : ""}><span>${esc(lab)}</span></label>`; }).join("")}</div>`;
   else if (f.type === "textarea") c = `<textarea id="${id}" rows="2" placeholder="${esc(f.ph || "")}">${esc(v)}</textarea>`;
-  else if (f.type === "het") c = `<input id="${id}" type="text" value="${esc(v)}" placeholder="例 het トレンパーアルビノ 66%het エクリプス" autocomplete="off">
+  else if (f.type === "het") c = `<input id="${id}" type="text" value="${esc(v)}" placeholder="例 het トレンパー 66%het エクリプス" autocomplete="off">
     <div class="seg" role="radiogroup" aria-label="hetの確率">${["100", "66", "50"].map((p, i) => `<label><input type="radio" name="${id}-pct" value="${p}"${i ? "" : " checked"}><span>${p}%</span></label>`).join("")}</div>
     <div class="chips wrap">${recGenes().map(g => `<button type="button" class="chip" data-het="${esc(f.k)}" data-gene="${esc(g.name)}">${esc(g.name)}</button>`).join("")}<button type="button" class="chip" data-het="${esc(f.k)}" data-gene="">消す</button></div>`;
-  else c = `<input id="${id}" type="${f.type === "date" ? "date" : "text"}"${f.type === "number" ? ' inputmode="decimal"' : ""} value="${esc(v)}" placeholder="${esc(f.ph || "")}" autocomplete="off"${f.type === "id" ? ' autocapitalize="characters"' : ""}>`;
+  else if (f.type === "homo") c = `<input id="${id}" type="text" value="${esc(v)}" placeholder="例 エクリプス（見た目に出ている潜性遺伝子）" autocomplete="off">
+    <div class="chips wrap">${recGenes().map(g => `<button type="button" class="chip" data-homo="${esc(f.k)}" data-gene="${esc(g.name)}">${esc(g.name)}</button>`).join("")}<button type="button" class="chip" data-homo="${esc(f.k)}" data-gene="">消す</button></div>`;
+  else c = `<input id="${id}" type="${f.type === "date" ? "date" : "text"}"${f.type === "number" ? ' inputmode="decimal"' : ""} value="${esc(v)}" placeholder="${esc(f.ph || "")}" autocomplete="off"${f.type === "id" ? ' autocapitalize="characters"' : ""}${f.ac ? ` data-ac="1"${f.geno ? ` data-gbase="f-${esc(f.geno.base)}" data-ghomo="f-${esc(f.geno.homo)}"` : ""}` : ""}>${f.ac ? `<div class="chips wrap acbox" data-acbox="${id}" hidden></div>` : ""}`;
   const chips = f.chips && f.chips.length ? `<div class="chips wrap">${f.chips.map(ch => { const [val, lab] = optPair(ch); return `<button type="button" class="chip" data-fill="${esc(f.k)}" data-val="${esc(val)}"${f.append ? ' data-append="1"' : ""}>${esc(lab)}</button>`; }).join("")}</div>` : "";
   return `<div class="field" data-field="${esc(f.k)}">${f.type === "seg" ? `<label>${esc(f.label)}</label>` : `<label for="${id}">${esc(f.label)}</label>`}${c}${chips}${f.hint ? `<p class="note">${esc(f.hint)}</p>` : ""}</div>`;
 }
 /* het field: pick the probability, then tap a gene to add "66%het エクリプス" (tapping the same gene replaces it) */
 function hetClick(root, e) {
+  const hb = e.target.closest("[data-homo]");
+  if (hb) {
+    /* homo field: tap a gene to add it, tap again to take it off */
+    const inp = root.querySelector("#f-" + hb.dataset.homo); if (!inp) return true;
+    const gene = hb.dataset.gene, cur = inp.value.split(/\s+/).filter(Boolean);
+    inp.value = !gene ? "" : (cur.includes(gene) ? cur.filter(x => x !== gene) : [...cur, gene]).join(" ");
+    inp.dataset.auto = "manual";
+    return true;
+  }
   const b = e.target.closest("[data-het]"); if (!b) return false;
   const inp = root.querySelector("#f-" + b.dataset.het); if (!inp) return true;
   const gene = b.dataset.gene; if (!gene) { inp.value = ""; return true; }
@@ -1286,6 +1301,54 @@ function hetClick(root, e) {
   inp.value = parts.join(" ");
   return true;
 }
+/* morph typeahead: while typing a morph or base morph, registered names (genes, combos, lines, traits, names already
+   used) that start with what was typed appear under the field; hiragana matches katakana (た → タンジェリン) */
+const kata = s => String(s || "").replace(/[ぁ-ゖ]/g, c => String.fromCharCode(c.charCodeAt(0) + 0x60));
+function morphWords() {
+  const used = new Set();
+  for (const g of [...S.geckos.values(), ...(S.archive || [])]) { if (g.morph) used.add(g.morph.trim()); if (g.base) used.add(g.base.trim()); }
+  const names = [...COMBOS.map(c => c.name), ...S.lines.map(l => l.name), ...GENES.flatMap(g => [g.name, g.sup]), ...POLY, ...S.lines.map(l => l.base), ...used];
+  return [...new Set(names.filter(Boolean).map(n => n.normalize("NFKC").trim()))];
+}
+function suggestMorph(token) {
+  const t = fold(kata(token)); if (!t) return [];
+  const words = morphWords().map(w => ({ w, a: fold(w), e: fold(toEnglish(w)) }));
+  const pre = words.filter(x => x.a.startsWith(t) || x.e.startsWith(t)), mid = words.filter(x => !pre.includes(x) && (x.a.includes(t) || x.e.includes(t)));
+  return [...pre.sort((a, b) => a.w.length - b.w.length), ...mid].slice(0, 8).map(x => x.w);
+}
+const acToken = v => { const m = String(v).match(/(\S*)$/); return m ? m[1] : ""; };
+function showAc(inp) {
+  const box = inp.parentElement.querySelector(`[data-acbox="${inp.id}"]`); if (!box) return;
+  const tok = acToken(inp.value), list = tok ? suggestMorph(tok).filter(w => w !== tok) : [];
+  box.innerHTML = list.map(w => `<button type="button" class="chip" data-acpick="${esc(w)}" data-acfor="${esc(inp.id)}">${esc(w)}${morphLang() === "en" || /^[\x00-\x7f]+$/.test(tok) ? ` <span class="muted small">${esc(toEnglish(w))}</span>` : ""}</button>`).join("");
+  box.hidden = !list.length;
+}
+/* typing a morph fills in what it means genetically, until those fields are edited by hand:
+   ストーンウォッシュ → base タンジェリン トレンパー, homo トレンパー; ラプター → homo トレンパー エクリプス */
+function autoGeno(inp) {
+  const root = inp.closest("form, .sheet, section") || document;
+  const b = inp.dataset.gbase && root.querySelector("#" + inp.dataset.gbase), h = inp.dataset.ghomo && root.querySelector("#" + inp.dataset.ghomo);
+  const morph = inp.value.trim(), ln = S.lines.filter(l => fold(morph).includes(fold(l.name)));
+  const base = ln.length ? ln.map(l => l.base).join(" ") : "";
+  const homo = Object.entries(parseMorph(morph).genes).filter(([k, st]) => geneOf(k)?.type === "rec" && st.c === 2).map(([k]) => geneOf(k).name).join(" ");
+  const put = (el, v) => { if (el && (el.value === "" || el.value === el.dataset.auto)) { el.value = v; el.dataset.auto = v; } };
+  put(b, base); put(h, homo);
+}
+document.addEventListener("input", e => {
+  const t = e.target;
+  if (t.dataset?.ac) showAc(t);
+  if (t.dataset && "auto" in t.dataset && t.value !== t.dataset.auto) t.dataset.auto = "\u0000";
+});
+document.addEventListener("change", e => { if (e.target.dataset?.gbase || e.target.dataset?.ghomo) autoGeno(e.target); });
+document.addEventListener("pointerdown", e => { if (e.target.closest("[data-acpick]")) e.preventDefault(); });
+document.addEventListener("click", e => {
+  const c = e.target.closest("[data-acpick]"); if (!c) return;
+  const inp = document.getElementById(c.dataset.acfor); if (!inp) return;
+  inp.value = inp.value.replace(/(\S*)$/, c.dataset.acpick) + " ";
+  c.parentElement.hidden = true;
+  if (inp.dataset.gbase || inp.dataset.ghomo) autoGeno(inp);
+  inp.focus();
+});
 function readForm(root, fields) {
   const o = {};
   for (const f of fields) {
@@ -1347,8 +1410,9 @@ function geckoFields(mode, cur = {}) {
   const fs = [
     { k: "use", label: "用途", type: "seg", options: USE_OPTS, def: "breeding" },
     { k: "sex", label: "性別", type: "seg", options: ["♂", "♀", "不明"], def: "不明" },
-    { k: "morph", label: "モルフ", ph: "下の候補をタップするか入力", chips: frequentMorphs() },
-    { k: "base", label: "ベースモルフ（遺伝の計算に使う）", ph: "ラインなどで、モルフ名と遺伝子が違うときだけ", chips: baseChips(), append: true, adv: true, hint: "例: モルフ「ストーンウォッシュ」でベース「ラプター」。空欄ならモルフの登録の内容で計算します" },
+    { k: "morph", label: "モルフ", ph: "入力すると候補が出ます（例 た → タンジェリン）", chips: frequentMorphs(), ac: true, geno: { base: "base", homo: "homo" } },
+    { k: "base", label: "ベースモルフ（遺伝の計算に使う）", ph: "モルフを入れると自動で入ります", ac: true, hint: "ラインはモルフの登録の内容が入ります。この個体だけ違うとき（このストーンウォッシュはラプター）は書き換えてください" },
+    { k: "homo", label: "homo（見た目に出ている潜性遺伝子）", type: "homo" },
     { k: "het", label: "het（見た目に出ない遺伝子）", type: "het" },
     { k: "birthDate", label: "生年月日", type: "date" },
     { k: "grade", label: "評価", type: "seg", options: [["", "なし"], ...GRADES], def: "" },
@@ -1414,16 +1478,14 @@ function deathForm(g) {
 function addMenu() {
   openSheet({ title: "新規登録", render: s => {
     s.body.innerHTML = `<div class="cards">
-      <button class="card" data-pick="pair"><b>ペアリング</b><div class="meta">メス → オスの順にQRを読み取って登録</div></button>
-      <button class="card" data-pick="lay"><b>産卵を記録</b><div class="meta">卵ごとにIDを発行し、プリンカップ用のシールを印刷待ちへ</div></button>
-      <button class="card" data-pick="hatch"><b>孵化を記録</b><div class="meta">卵のQRを読み取り、親情報からモルフ候補を表示</div></button>
       <button class="card" data-pick="gecko"><b>個体を登録</b><div class="meta">購入した個体など。IDを自動発行</div></button>
       <button class="card" data-pick="packing"><b>パッキングモード</b><div class="meta">QRを読んで番号と価格を決め、名刺とカップラベルを印刷待ちへ</div></button>
       <button class="card" data-pick="wholesale"><b>卸モード</b><div class="meta">QRを読んで写真と卸価格を決め、卸リスト（カタログ）へ</div></button>
+      <button class="card" data-pick="sales"><b>販売モード</b><div class="meta">QRを読んで写真と販売価格を決め、一般のお客様向けの販売リストへ</div></button>
       <button class="card" data-pick="morphs"><b>モルフの登録</b><div class="meta">ベース（遺伝子）・コンボ・ラインの追加、変更、削除</div></button>
       <button class="card" data-pick="settings"><b>設定</b><div class="meta">ClaudeのAPIキーと予算、Dropboxバックアップ、データの書き出し</div></button></div>`;
     s.body.addEventListener("click", e => { const b = e.target.closest("[data-pick]"); if (!b) return; closeSheet(s);
-      ({ gecko: () => newGeckoForm(), pair: () => pairingFlow(), lay: () => layPicker(), hatch: () => hatchPicker(), packing: () => packingSheet(), wholesale: () => wholesaleSheet(), morphs: () => morphSheet(), settings: () => settingsSheet() })[b.dataset.pick](); });
+      ({ gecko: () => newGeckoForm(), pair: () => pairingFlow(), lay: () => layPicker(), hatch: () => hatchPicker(), packing: () => packingSheet(), wholesale: () => wholesaleSheet(), sales: () => salesSheet(), morphs: () => morphSheet(), settings: () => settingsSheet() })[b.dataset.pick](); });
   } });
 }
 
@@ -1467,8 +1529,8 @@ async function loadParents(list) {
 const TAG_MM = [42, 20], TAG_PX = [496, 236];
 const geckoSpec = g => {
   const par = [g.sireId ? { t: `${g.sireId} ${mz(morphOf(g.sireId))}`, s: true } : null, g.damId ? { t: `${g.damId} ${mz(morphOf(g.damId))}`, s: true } : null].filter(Boolean);
-  const cb = cbText(g), het = g.het ? { t: mz(g.het), s: true } : null;
-  if (isSale(g) && !isBreeding(g)) return { id: g.id, big: true, tag: "", rows: [{ t: morphEnOf(g) || "", b: true, wrap: cb || het ? 1 : 2 }, het ? { t: toEnglish(g.het), s: true } : null, cb ? { t: cb, s: true } : null].filter(Boolean), foot: [dot(g.birthDate), g.incubTemp ? g.incubTemp + "℃" : ""].filter(Boolean).join("   ") };
+  const cb = cbText(g), het = geneLine(g) ? { t: mz(geneLine(g)), s: true } : null;
+  if (isSale(g) && !isBreeding(g)) return { id: g.id, big: true, tag: "", rows: [{ t: morphEnOf(g) || "", b: true, wrap: cb || het ? 1 : 2 }, het ? { t: toEnglish(geneLine(g)), s: true } : null, cb ? { t: cb, s: true } : null].filter(Boolean), foot: [dot(g.birthDate), g.incubTemp ? g.incubTemp + "℃" : ""].filter(Boolean).join("   ") };
   return { id: g.id, tag: g.sex === "♂" || g.sex === "♀" ? g.sex : "", rows: [{ t: mz(g.morph) || "モルフ未入力", b: true, wrap: par.length || het ? 1 : 2 }, het, { t: [dot(g.birthDate), cb].filter(Boolean).join("  ") }, ...par].filter(Boolean) };
 };
 const geckoSpecs = async list => { await loadParents(list); return list.map(geckoSpec); };
@@ -1899,10 +1961,11 @@ async function hatchForm(eggId) {
       <h3><span class="mono">${esc(x.id)}</span>${x.id === e.id ? ` <span class="pill s-grow">読み取った卵</span>` : ""} <span class="muted small">${i + 1}/${eggs.length}個目</span></h3>
       ${fieldHTML({ k: "res-" + i, label: "結果", type: "seg", options: [["hatch", "孵化した"], ["fail", "不良"], ["wait", "まだ"]] }, "hatch")}
       <div data-part="hatch">
-        ${pred.parsedAny ? `<div class="chips wrap">${cands.map((c, j) => `<button type="button" class="chip" data-cand="${i}:${j}" aria-pressed="false">${esc(mz(c.label))} ${pctText(c.p)}</button>`).join("")}</div>` : ""}
+        ${pred.parsedAny ? `<div class="chips wrap">${cands.map((c, j) => `<button type="button" class="chip" data-cand="${i}:${j}" aria-pressed="false">${esc(mz(c.label))}${c.plus ? " + homo " + esc(mz(c.plus)) : ""} ${pctText(c.p)}</button>`).join("")}</div>` : ""}
         ${pred.traits.length ? `<div class="chips wrap">${pred.traits.map((t, j) => `<button type="button" class="chip" data-trait="${i}:${j}">＋${esc(t)}</button>`).join("")}</div>` : ""}
-        ${fieldHTML({ k: "m-" + i, label: "モルフ", ph: "候補を選ぶか入力" }, "")}
-        ${fieldHTML({ k: "b-" + i, label: "ベースモルフ（ライン名の個体の中身・空欄可）", ph: "候補を選ぶと入ります" }, "")}
+        ${fieldHTML({ k: "m-" + i, label: "モルフ", ph: "候補を選ぶか入力（入力でも候補が出ます）", ac: true, geno: { base: "b-" + i, homo: "ho-" + i } }, "")}
+        ${fieldHTML({ k: "b-" + i, label: "ベースモルフ（遺伝の計算に使う）", ph: "候補やモルフから自動で入ります", ac: true }, "")}
+        ${fieldHTML({ k: "ho-" + i, label: "homo（見た目に出ている潜性遺伝子）", type: "homo" }, "")}
         ${fieldHTML({ k: "het-" + i, label: "het（候補を選ぶと入ります）", type: "het" }, "")}
         ${fieldHTML({ k: "sx-" + i, label: "性別", type: "seg", options: ["♂", "♀", "不明"] }, "不明")}
         ${fieldHTML({ k: "w-" + i, label: "体重（g）", type: "number", ph: "任意" }, "")}
@@ -1931,7 +1994,7 @@ async function hatchForm(eggId) {
       if (c) {
         const [i, j] = c.dataset.cand.split(":"), cd = cands[+j];
         for (const b of s.body.querySelectorAll(`[data-cand^="${i}:"]`)) b.setAttribute("aria-pressed", String(b === c));
-        $("#f-m-" + i, s.body).value = cd.label; $("#f-b-" + i, s.body).value = cd.base || ""; $("#f-het-" + i, s.body).value = cd.hetText || ""; return;
+        $("#f-m-" + i, s.body).value = cd.label; $("#f-b-" + i, s.body).value = cd.base || ""; $("#f-ho-" + i, s.body).value = cd.homo || ""; $("#f-het-" + i, s.body).value = cd.hetText || ""; return;
       }
       const tr = ev.target.closest("[data-trait]");
       if (tr) { const [i, j] = tr.dataset.trait.split(":"), t = pred.traits[+j], mi = $("#f-m-" + i, s.body); if (!mi.value.includes(t)) mi.value = (t + " " + mi.value).trim(); }
@@ -1945,7 +2008,7 @@ async function hatchForm(eggId) {
           if (done.has(x.id)) continue;
           cur = x.id; const r = val("res-" + i);
           if (r === "hatch") {
-            const h = await hatchEgg({ eggId: x.id, morph: $("#f-m-" + i, s.body).value, base: $("#f-b-" + i, s.body).value, het: $("#f-het-" + i, s.body).value, sex: val("sx-" + i) || "不明", hatchDate: date, weight: $("#f-w-" + i, s.body).value });
+            const h = await hatchEgg({ eggId: x.id, morph: $("#f-m-" + i, s.body).value, base: $("#f-b-" + i, s.body).value, homo: $("#f-ho-" + i, s.body).value, het: $("#f-het-" + i, s.body).value, sex: val("sx-" + i) || "不明", hatchDate: date, weight: $("#f-w-" + i, s.body).value });
             done.set(x.id, h.gecko.id); queued = queued || h.queued;
           } else if (r === "fail") { await failEgg({ eggId: x.id, reason: val("rs-" + i) || "無精卵", date }); done.set(x.id, ""); }
         }
@@ -2047,121 +2110,140 @@ function packingSheet() {
   } });
 }
 
-/* ---------- wholesale mode and catalog ----------
-   the catalog lives at public/catalog with everything a buyer needs copied in, so it never has to read the ledger itself */
-const catalogItems = () => (S.catalog.items || []);
-const catalogIds = () => new Set(catalogItems().map(x => x.id));
-const catEntry = (g, at) => ({ id: g.id, sex: g.sex || "", morph: g.morph || "", morphEn: morphEnOf(g), birthDate: g.birthDate || "", price: g.wholesalePrice ?? null, photos: (g.photos || []).map(p => p.id).slice(0, 6), at: at || nowTs() });
-/* wholesale numbers are simple and always 1..N over what is listed now, in the order it was added */
-const wnoOf = id => catalogItems().find(x => x.id === id)?.wno ?? null;
-async function saveCatalog(list) {
+/* ---------- wholesale mode and retail (sales) mode ----------
+   Each public list lives in its own doc (public/catalog, public/shop) with everything a buyer needs copied in, so the
+   public page never reads the ledger. Both work the same way; only the price they use and where they publish differ:
+   wholesale uses the wholesale price, retail the shop price (the same price the business card prints). */
+const LISTS = {
+  wh: { key: "wh", st: "catalog", doc: "public/catalog", title: "卸リスト", sheet: "卸モード", name: "卸", price: "wholesalePrice", priceLabel: "卸価格（円）", pub: () => BM.catalog, chips: g => wholesaleChips(g) },
+  rt: { key: "rt", st: "shop", doc: "public/shop", title: "販売リスト", sheet: "販売モード", name: "販売", price: "price", priceLabel: "販売価格（小売り・円）", pub: () => BM.shop, chips: g => priceChips(g) },
+};
+const geneLine = g => [g.homo ? "homo " + g.homo : "", g.het || ""].filter(Boolean).join(" ");
+const listItems = M => (S[M.st].items || []);
+const listIds = M => new Set(listItems(M).map(x => x.id));
+const listEntry = (M, g, at) => ({ id: g.id, sex: g.sex || "", morph: g.morph || "", morphEn: morphEnOf(g), het: geneLine(g), birthDate: g.birthDate || "", price: g[M.price] ?? null, photos: (g.photos || []).map(p => p.id).slice(0, 6), at: at || nowTs() });
+/* list numbers are simple and always 1..N over what is listed now, in the order it was added */
+const listNo = (M, id) => listItems(M).find(x => x.id === id)?.wno ?? null;
+async function saveList(M, list) {
   needDb();
   const items = list.slice().sort((a, b) => String(a.at).localeCompare(String(b.at))).map((x, i) => ({ ...x, wno: i + 1 }));
-  const ref = S.db.doc("public/catalog"), snap = await ref.get();
-  const data = { items, updatedAt: nowTs(), title: S.catalog.title || "卸リスト" };
+  const ref = S.db.doc(M.doc), snap = await ref.get();
+  const data = { items, updatedAt: nowTs(), title: S[M.st].title || M.title };
   if (snap.exists) await ref.update(data); else await ref.set(data);
-  S.catalog = { ...S.catalog, ...data }; schedule();
+  S[M.st] = { ...S[M.st], ...data }; schedule();
 }
-async function catalogUpsert(g) {
-  const old = catalogItems().find(x => x.id === g.id);
-  await saveCatalog(catalogItems().filter(x => x.id !== g.id).concat(catEntry(g, old?.at)));
+async function listUpsert(M, g) {
+  const old = listItems(M).find(x => x.id === g.id);
+  await saveList(M, listItems(M).filter(x => x.id !== g.id).concat(listEntry(M, g, old?.at)));
 }
-async function catalogAdd(id, price) {
+/* a gecko's change (photos, morph) is copied into every list it is on */
+async function listsUpsert(g) { for (const M of Object.values(LISTS)) if (listIds(M).has(g.id)) await listUpsert(M, g).catch(e => console.warn("list", e)); }
+async function listsDrop(id) { for (const M of Object.values(LISTS)) if (listIds(M).has(id)) await saveList(M, listItems(M).filter(x => x.id !== id)).catch(() => {}); }
+async function listAdd(M, id, price) {
   needDb();
   const g = await getRec("geckos", id); if (!g) throw new Error(normId(id) + " という個体は見つかりません");
   if (INACTIVE.has(g.status)) throw new Error(g.id + " はすでに「" + g.status + "」です");
-  const p = toNum(price); if (p == null) throw new Error("卸価格を選ぶか入力してください");
-  const fresh = catalogIds().has(g.id);
-  const g2 = await updateGecko(g.id, { wholesalePrice: p }, fresh ? "" : "卸リストに追加");
-  await catalogUpsert(g2);
-  return { ...g2, wno: wnoOf(g2.id) };
+  const p = toNum(price); if (p == null) throw new Error(M.priceLabel.replace("（円）", "").replace(/・円）/, "）") + "を選ぶか入力してください");
+  const fresh = listIds(M).has(g.id);
+  const g2 = await updateGecko(g.id, { [M.price]: p }, fresh ? "" : M.title + "に追加");
+  await listUpsert(M, g2);
+  return { ...g2, wno: listNo(M, g2.id) };
 }
-async function catalogRemove(id) { await saveCatalog(catalogItems().filter(x => x.id !== id)); await logTo("geckos", id, "卸リストから外す"); }
-async function catalogRefresh() {
+async function listRemove(M, id) { await saveList(M, listItems(M).filter(x => x.id !== id)); await logTo("geckos", id, M.title + "から外す"); }
+async function listRefresh(M) {
   const out = [];
-  for (const x of catalogItems()) { const g = await getRec("geckos", x.id).catch(() => null); if (g && !INACTIVE.has(g.status)) out.push(catEntry(g, x.at)); }
-  await saveCatalog(out); return out.length;
+  for (const x of listItems(M)) { const g = await getRec("geckos", x.id).catch(() => null); if (g && !INACTIVE.has(g.status)) out.push(listEntry(M, g, x.at)); }
+  await saveList(M, out); return out.length;
 }
+/* the wholesale names used elsewhere */
+const catalogItems = () => listItems(LISTS.wh);
+const catalogIds = () => listIds(LISTS.wh);
+const wnoOf = id => listNo(LISTS.wh, id);
+const saveCatalog = list => saveList(LISTS.wh, list);
+const catalogUpsert = g => listsUpsert(g);
 function wholesaleChips(g) {
   return [...new Set([...(g.wholesalePrice != null ? [String(g.wholesalePrice)] : []), "3000", "5000", "8000", "10000", "15000", "20000"])].slice(0, 7).map(p => [p, yen(p)]);
 }
-function wholesaleSheet() {
-  const st = { id: "", price: "" };
+const wholesaleSheet = () => listSheet(LISTS.wh);
+const salesSheet = () => listSheet(LISTS.rt);
+function listSheet(M) {
+  const st = { id: "", price: "" }, k = M.key;
   const draw = async s => {
     const g = st.id ? await getRec("geckos", st.id).catch(() => null) : null;
-    const items = catalogItems().slice().sort((a, b) => (a.wno ?? 0) - (b.wno ?? 0));
-    const pub = await BM.catalog.state();
-    const inList = g && catalogIds().has(g.id);
-    if (g && st.price === "" && g.wholesalePrice != null) st.price = String(g.wholesalePrice);
+    const items = listItems(M).slice().sort((a, b) => (a.wno ?? 0) - (b.wno ?? 0));
+    const pub = await M.pub().state();
+    const inList = g && listIds(M).has(g.id);
+    if (g && st.price === "" && g[M.price] != null) st.price = String(g[M.price]);
     s.body.innerHTML = `
-      <p class="note" style="margin:0 0 10px">個体のQRを読む → 写真と卸価格を決める → 卸リストへ。卸リストはカタログとしてPC・スマホで見られる形にまとまります。</p>
-      ${!g ? `<button class="btn primary block big" data-wq="scan">${QR_ICON}個体のQRを読み取る</button><div style="margin-top:8px">${idEntry("wq", "またはIDを入力（例 26-0012）")}</div>${st.id ? `<div class="infobox warn" style="margin-top:8px">${esc(st.id)} は見つかりません</div>` : ""}`
+      <p class="note" style="margin:0 0 10px">個体のQRを読む → 写真と${M.name === "卸" ? "卸価格" : "販売価格"}を決める → ${M.title}へ。${M.title}はお客様用ページとしてPC・スマホで見られる形にまとまります。${M.key === "rt" ? "価格は個体の販売価格（名刺と同じ小売りの価格）を使います。" : ""}</p>
+      ${!g ? `<button class="btn primary block big" data-wq="scan">${QR_ICON}個体のQRを読み取る</button><div style="margin-top:8px">${idEntry(k, "またはIDを入力（例 26-0012）")}</div>${st.id ? `<div class="infobox warn" style="margin-top:8px">${esc(st.id)} は見つかりません</div>` : ""}`
         : `<div class="slot done"><div class="slot-g">${sxHTML(g.sex)}<span class="mono">${esc(g.id)}</span><span class="muted small">${esc(mz(g.morph) || "")}</span><button class="btn sm" data-wq="clear">変更</button></div>
-            <div class="muted small">${esc(morphEnOf(g))} · ${esc(g.birthDate || "誕生日不明")} · ${esc(g.status)}${inList ? ` · <b>卸 No.${esc(wnoOf(g.id))} で掲載中</b>` : ""}</div></div>
+            <div class="muted small">${esc(morphEnOf(g))}${geneLine(g) ? " · " + esc(mz(geneLine(g))) : ""} · ${esc(g.birthDate || "誕生日不明")} · ${esc(g.status)}${inList ? ` · <b>${M.name} No.${esc(listNo(M, g.id))} で掲載中</b>` : ""}</div></div>
           ${photoStrip(g, true)}
           <div class="form">
-            <div class="field"><label for="wq-price">卸価格（円）</label><input id="wq-price" inputmode="decimal" value="${esc(st.price)}" placeholder="タップで選ぶか入力" autocomplete="off">
-              <div class="chips wrap">${wholesaleChips(g).map(([v, l]) => `<button type="button" class="chip" data-wp="${esc(v)}">${esc(l)}</button>`).join("")}</div></div>
+            <div class="field"><label for="wq-price">${esc(M.priceLabel)}</label><input id="wq-price" inputmode="decimal" value="${esc(st.price)}" placeholder="タップで選ぶか入力" autocomplete="off">
+              <div class="chips wrap">${M.chips(g).map(([v, l]) => `<button type="button" class="chip" data-wp="${esc(v)}">${esc(l)}</button>`).join("")}</div></div>
             <p class="form-err" role="alert" hidden></p>
-            <button class="btn primary block big" data-wq="add">${inList ? "卸リストを更新" : "卸リストに追加"}</button>
+            <button class="btn primary block big" data-wq="add">${inList ? M.title + "を更新" : M.title + "に追加"}</button>
           </div>`}
-      <h3 class="sec-h">卸リスト <span class="count">${items.length}頭</span></h3>
-      ${items.length ? `<div class="list">${items.map(x => `<div class="row" style="grid-template-columns:auto auto minmax(0,1fr) auto"><span class="pkno">${esc(x.wno ?? "")}</span><span class="thumb">${x.photos && x.photos[0] ? `<img src="_blob/${esc(x.photos[0])}" alt="" loading="lazy">` : ""}</span><span class="rmain"><span class="rmorph">${esc(x.morph)}</span><span class="rsub"><button class="idlink" data-open="${esc(x.id)}">${esc(x.id)}</button> ${esc(x.birthDate || "")} · ${yen(x.price)}</span></span><button class="btn sm" data-wdel="${esc(x.id)}">外す</button></div>`).join("")}</div>
-        <p class="note">卸の番号は、いま掲載している個体に1から順に振られます。外すと番号は詰めて振り直されます。</p>`
+      <h3 class="sec-h">${esc(M.title)} <span class="count">${items.length}頭</span></h3>
+      ${items.length ? `<div class="list">${items.map(x => `<div class="row" style="grid-template-columns:auto auto minmax(0,1fr) auto"><span class="pkno">${esc(x.wno ?? "")}</span><span class="thumb">${x.photos && x.photos[0] ? `<img src="_blob/${esc(x.photos[0])}" alt="" loading="lazy">` : ""}</span><span class="rmain"><span class="rmorph">${esc(mz(x.morph))}</span><span class="rsub"><button class="idlink" data-open="${esc(x.id)}">${esc(x.id)}</button> ${esc(x.birthDate || "")} · ${yen(x.price)}</span></span><button class="btn sm" data-wdel="${esc(x.id)}">外す</button></div>`).join("")}</div>
+        <p class="note">番号は、いま掲載している個体に1から順に振られます。外すと番号は詰めて振り直されます。</p>`
         : `<div class="empty">まだありません。</div>`}
-      <div class="botacts"><button class="btn abtn" data-wq="view">カタログを見る</button><button class="btn abtn" data-wq="refresh">最新の情報に更新</button></div>
+      <div class="botacts"><button class="btn abtn" data-wq="view">ページを見る</button><button class="btn abtn" data-wq="refresh">最新の情報に更新</button></div>
       <button class="btn abtn primary block" data-wq="publish" style="margin-top:8px">お客様用ページに公開</button>
-      <p class="note">公開ページ: <span class="mono" style="user-select:all">${esc(BM.catalog.url)}</span> <button class="idlink" data-wq="copy" style="font-family:inherit">コピー</button><br>前回の公開: ${pub.at ? esc(fmtTime(pub.at)) + "（" + pub.count + "頭）" : "まだありません"}。公開してから1〜2分でページに反映されます。</p>
-      <p class="note">「最新の情報に更新」で、モルフや写真の変更を反映し、販売済み・死亡の個体をリストから外します。</p>`;
+      <p class="note">公開ページ: <span class="mono" style="user-select:all">${esc(M.pub().url)}</span> <button class="idlink" data-wq="copy" style="font-family:inherit">コピー</button><br>前回の公開: ${pub.at ? esc(fmtTime(pub.at)) + "（" + pub.count + "頭）" : "まだありません"}。公開してから1〜2分でページに反映されます。</p>
+      <p class="note">「最新の情報に更新」で、モルフや写真、価格の変更を反映し、販売済み・死亡の個体をリストから外します。</p>`;
   };
   const refresh = s => { const a = document.activeElement; if (a && a.tagName === "INPUT" && s.el.contains(a)) return; const p = $("#wq-price", s.body); if (p) st.price = p.value; draw(s); };
-  openSheet({ title: "卸モード", refresh, render: s => {
+  openSheet({ title: M.sheet, refresh, render: s => {
     draw(s);
     s.body.onclick = async e => {
       const t = e.target;
       const ph = t.closest("[data-photo]"); if (ph) return photoSheet(ph.dataset.pg, ph.dataset.photo);
       const q = t.closest("[data-q]"); if (q && st.id) { const p = $("#wq-price", s.body); if (p) st.price = p.value; return pickPhoto(st.id, q.dataset.q === "photo-cam" ? "cam" : "lib", () => draw(s)); }
       const wp = t.closest("[data-wp]"); if (wp) { $("#wq-price", s.body).value = wp.dataset.wp; st.price = wp.dataset.wp; return; }
-      const del = t.closest("[data-wdel]"); if (del) { try { await catalogRemove(del.dataset.wdel); draw(s); } catch (x) { toast(x.message); } return; }
-      const en = t.closest("[data-enter]"); if (en) { const v = $("#ide-wq", s.body).value; if (v.trim()) { st.id = normId(v); st.price = ""; draw(s); } return; }
+      const del = t.closest("[data-wdel]"); if (del) { try { await listRemove(M, del.dataset.wdel); draw(s); } catch (x) { toast(x.message); } return; }
+      const en = t.closest("[data-enter]"); if (en) { const v = $("#ide-" + k, s.body).value; if (v.trim()) { st.id = normId(v); st.price = ""; draw(s); } return; }
       const b = t.closest("[data-wq]"); if (!b) return;
       const a = b.dataset.wq;
       if (a === "scan") return startScan(id => { if (collOf(id) !== "geckos") throw new Error("個体のQRではありません（" + id + "）"); st.id = id; st.price = ""; draw(s); });
       if (a === "clear") { st.id = ""; st.price = ""; draw(s); return; }
-      if (a === "view") return catalogPreview();
-      if (a === "copy") { try { await navigator.clipboard.writeText(BM.catalog.url); toast("URLをコピーしました"); } catch { toast(BM.catalog.url); } return; }
+      if (a === "view") return listPreview(M);
+      if (a === "copy") { try { await navigator.clipboard.writeText(M.pub().url); toast("URLをコピーしました"); } catch { toast(M.pub().url); } return; }
       if (a === "publish") {
         b.disabled = true; const label = b.textContent; b.textContent = "公開しています…";
-        try { const r = await BM.catalog.publish(S.catalog, (n, all) => { b.textContent = `写真を送っています ${n}/${all}`; }); toast(r.count + "頭のカタログを公開しました。1〜2分で反映されます"); draw(s); }
+        try { const r = await M.pub().publish(S[M.st], (n, all) => { b.textContent = `写真を送っています ${n}/${all}`; }); toast(r.count + "頭の" + M.title + "を公開しました。1〜2分で反映されます"); draw(s); }
         catch (x) { toast(x.message); b.disabled = false; b.textContent = label; if (x.code === "no_gh" || x.code === "gh_auth") settingsSheet("catalog"); }
         return;
       }
-      if (a === "refresh") { b.disabled = true; try { const n = await catalogRefresh(); toast(n + "頭の情報を更新しました"); draw(s); } catch (x) { toast(x.message); b.disabled = false; } return; }
+      if (a === "refresh") { b.disabled = true; try { const n = await listRefresh(M); toast(n + "頭の情報を更新しました"); draw(s); } catch (x) { toast(x.message); b.disabled = false; } return; }
       if (a === "add") {
         const p = $("#wq-price", s.body); st.price = p.value; const err = $(".form-err", s.body); err.hidden = true; b.disabled = true;
-        try { const g = await catalogAdd(st.id, st.price); toast("卸 No." + g.wno + "（" + g.id + "）で卸リストに入れました"); st.id = ""; st.price = ""; draw(s); }
+        try { const g = await listAdd(M, st.id, st.price); toast(M.name + " No." + g.wno + "（" + g.id + "）で" + M.title + "に入れました"); st.id = ""; st.price = ""; draw(s); }
         catch (x) { err.textContent = x.message; err.hidden = false; b.disabled = false; }
       }
     };
   } });
 }
-/* the catalog itself: a responsive grid that reads only public/catalog */
-function catalogHTML(cat) {
+/* the list as a buyer sees it: a responsive grid that reads only the list doc */
+function catalogHTML(cat, M = LISTS.wh) {
   const items = (cat.items || []).slice().sort((a, b) => (a.wno ?? 0) - (b.wno ?? 0));
-  return `<div class="cat-head"><div><h1>${esc(cat.title || "卸リスト")}</h1><p>${items.length}頭 · ${esc((cat.updatedAt || "").slice(0, 10).replace(/-/g, "/"))} 更新</p></div></div>
+  return `<div class="cat-head"><div><h1>${esc(cat.title || M.title)}</h1><p>${items.length}頭 · ${esc((cat.updatedAt || "").slice(0, 10).replace(/-/g, "/"))} 更新</p></div></div>
     ${items.length ? `<div class="cat-grid">${items.map(x => `<article class="cat-card">
       <div class="cat-photo">${x.photos && x.photos[0] ? `<img src="_blob/${esc(x.photos[0])}" alt="${esc(x.id)} の写真" loading="lazy">` : `<span>写真なし</span>`}</div>
       ${x.photos && x.photos.length > 1 ? `<div class="cat-more">${x.photos.slice(1, 4).map(p => `<img src="_blob/${esc(p)}" alt="" loading="lazy">`).join("")}</div>` : ""}
       <div class="cat-body"><div class="cat-top"><span class="cat-id">No.${esc(x.wno ?? "")}</span><span class="cat-sex">${esc(x.sex === "♂" ? "♂ Male" : x.sex === "♀" ? "♀ Female" : "")}</span></div>
-        <div class="cat-morph">${esc(x.morph || "—")}</div>${x.morphEn && x.morphEn !== x.morph ? `<div class="cat-en">${esc(x.morphEn)}</div>` : ""}
+        <div class="cat-morph">${esc(x.morph || "—")}</div>${x.morphEn && x.morphEn !== x.morph ? `<div class="cat-en">${esc(x.morphEn)}</div>` : ""}${x.het ? `<div class="cat-en">${esc(x.het)}</div>` : ""}
         <div class="cat-foot"><span>${x.birthDate ? esc(x.birthDate.replace(/-/g, ".")) + " 生まれ" : ""}</span><b>${x.price != null ? yen(x.price) : "価格はお問い合わせ"}</b></div></div></article>`).join("")}</div>`
       : `<div class="empty">現在掲載している個体はありません。</div>`}`;
 }
-function catalogPreview() {
-  openSheet({ title: "カタログ（卸リスト）", refresh: s => { s.body.innerHTML = catalogHTML(S.catalog); }, render: s => {
-    s.body.innerHTML = catalogHTML(S.catalog) + `<p class="note" style="margin-top:14px">お客様に見せるカタログはこの内容です。卸リストを変えると自動で反映されます。</p>`;
+function listPreview(M) {
+  openSheet({ title: M.title + "（お客様用ページの内容）", refresh: s => { s.body.innerHTML = catalogHTML(S[M.st], M); }, render: s => {
+    s.body.innerHTML = catalogHTML(S[M.st], M) + `<p class="note" style="margin-top:14px">お客様用ページには、公開したときのこの内容が出ます。</p>`;
   } });
 }
+const catalogPreview = () => listPreview(LISTS.wh);
 let catalogMode = false;
 function renderCatalogPage() { const p = $("#catalog-page"); p.innerHTML = `<div class="cat-wrap gut">${catalogHTML(S.catalog)}</div>`; }
 function enterCatalogMode() { catalogMode = true; $("#app").hidden = true; $("#catalog-page").hidden = false; document.body.style.overflow = "auto"; renderCatalogPage(); }
@@ -2210,6 +2292,7 @@ function openGecko(id) {
       <dl class="kv">
         <dt>モルフ</dt><dd>${esc(mz(g.morph) || "—")}${sale ? `<br><span class="muted small">${esc(morphEnOf(g))}</span>` : ""}</dd>
         ${g.base ? `<dt>ベース</dt><dd>${esc(mz(g.base))}</dd>` : ""}
+        <dt>homo</dt><dd>${esc(mz(g.homo) || "なし")}</dd>
         <dt>het</dt><dd>${esc(mz(g.het) || "なし")}</dd>
         <dt>評価</dt><dd><span class="gseg" role="group" aria-label="評価">${GRADES.map(x => `<button data-grade="${x}" aria-pressed="${g.grade === x}">${x}</button>`).join("")}</span></dd>
         ${g.name ? `<dt>呼び名</dt><dd>${esc(g.name)}</dd>` : ""}
@@ -2218,7 +2301,7 @@ function openGecko(id) {
         <dt>由来</dt><dd>${esc(g.origin || "—")}${cbText(g) ? " · " + esc(cbText(g)) : ""}${g.purchasePrice != null ? " · 購入 " + yen(g.purchasePrice) : ""}</dd>
         <dt>父 × 母</dt><dd>${idBtn(g.sireId)} × ${idBtn(g.damId)}</dd>
         ${g.eggId ? `<dt>卵</dt><dd>${idBtn(g.eggId)} ${g.clutchId ? "· " + idBtn(g.clutchId) : ""}</dd>` : ""}
-        ${g.price != null && !done ? `<dt>販売価格</dt><dd class="mono">${yen(g.price)}${g.packNo ? ` <span class="muted small">パッキング No.${esc(g.packNo)}</span>` : ""}</dd>` : ""}
+        ${g.price != null && !done ? `<dt>販売価格</dt><dd class="mono">${yen(g.price)}${g.packNo ? ` <span class="muted small">パッキング No.${esc(g.packNo)}</span>` : ""}${listIds(LISTS.rt).has(g.id) ? ` <span class="pill s-sale">販売 No.${esc(listNo(LISTS.rt, g.id))} 掲載中</span>` : ""}</dd>` : ""}
         ${g.wholesalePrice != null && !done ? `<dt>卸価格</dt><dd class="mono">${yen(g.wholesalePrice)}${catalogIds().has(g.id) ? ` <span class="pill s-sale">卸 No.${esc(wnoOf(g.id))} 掲載中</span>` : ""}</dd>` : ""}
         <dt>体重</dt><dd class="num">${wh[0] ? esc(wh[0].g) + "g <span class='muted small'>" + esc(md(wh[0].date)) + "</span>" : "—"}</dd>
         ${g.status === "販売済" ? `<dt>販売</dt><dd class="num">${yen(g.soldPrice)} · ${esc(g.soldDate || "")} · ${esc(g.saleChannel || "小売り")}${g.saleNotes ? "<br>" + esc(g.saleNotes) : ""}</dd>` : ""}
@@ -2351,7 +2434,7 @@ function openEgg(id) {
 /* ---------- views ---------- */
 const offlineBanner = () => S.db ? "" : `<div class="banner">台帳のデータを開けませんでした。アプリを開き直してください。</div>`;
 function geckoRow(g) {
-  const sub = [mz(g.het) || "", isBreeding(g) && isSale(g) ? "繁殖・販売" : "", age(g.birthDate), !isBreeding(g) && (g.sireId || g.damId) ? (g.sireId || "?") + "×" + (g.damId || "?") : ""].filter(Boolean).join(" · ");
+  const sub = [mz(geneLine(g)) || "", isBreeding(g) && isSale(g) ? "繁殖・販売" : "", age(g.birthDate), !isBreeding(g) && (g.sireId || g.damId) ? (g.sireId || "?") + "×" + (g.damId || "?") : ""].filter(Boolean).join(" · ");
   return `<button class="row" data-open="${esc(g.id)}"><span class="rid">${esc(g.id)}</span>${sxHTML(g.sex)}<span class="rmain"><span class="rmorph">${esc(mz(g.morph) || "モルフ未入力")}</span><span class="rsub">${esc(sub || "—")}</span></span><span class="rright">${pill(g.status)}<span>${gradeHTML(g.grade)}${g.status === "販売済" ? ` <span class="rprice">${yen(g.soldPrice)}</span>` : ""}</span></span></button>`;
 }
 function renderGeckos() {
@@ -2595,7 +2678,7 @@ let sample = null, toolsOk = false, toolMax = 20, ctl = null;
 let turns = lsGet("leopa.chat", []);
 let tier = lsGet("leopa.tier", "quick");
 const GECKO_PROPS = {
-  sex: { type: "string", enum: ["♂", "♀", "不明"] }, morph: { type: "string" }, het: { type: "string", description: "見た目に出ないhet。例 \"het トレンパーアルビノ 66%het エクリプス\"" }, morphEn: { type: "string", description: "名刺用の英語モルフ名（空なら自動変換）" },
+  sex: { type: "string", enum: ["♂", "♀", "不明"] }, morph: { type: "string" }, homo: { type: "string", description: "見た目に出ている潜性遺伝子（例 \"エクリプス\"）。スペース区切り" }, base: { type: "string", description: "遺伝の計算に使うベースモルフ（ライン個体の中身など）" }, het: { type: "string", description: "見た目に出ないhet。例 \"het トレンパーアルビノ 66%het エクリプス\"" }, morphEn: { type: "string", description: "名刺用の英語モルフ名（空なら自動変換）" },
   birthDate: { type: "string", description: "YYYY-MM-DD。年だけなら YYYY-01-01" }, incubTemp: { type: "number" },
   origin: { type: "string", enum: ["自家繁殖", "購入", "その他"] }, breeder: { type: "string", description: "自家繁殖以外: 誰の繁殖（CB）か。ラベルに〇〇 CBと印刷" }, purchasePrice: { type: "number", description: "購入した個体の購入金額（円）" },
   price: { type: "number", description: "販売価格（円）。名刺に印刷される" },
@@ -2695,7 +2778,7 @@ function makeTools(log, status) {
         return { dam: d && { id: d.id, morph: d.morph }, sire: s && { id: s.id, morph: s.morph }, candidates: p.candidates.map(c => ({ morph: c.morph, probability: Math.round(c.p * 1000) / 10, combo: c.combo || undefined })), lineTraits: p.traits };
       }) },
     { name: "record_egg_hatch", description: "卵IDの孵化を記録し、子を新しいIDで登録（販売用・育成中。父母・産卵・卵ID・孵化温度を引き継ぐ）。",
-      inputSchema: { type: "object", properties: { eggId: { type: "string" }, sex: { type: "string", enum: ["♂", "♀", "不明"] }, morph: { type: "string" }, het: { type: "string" }, hatchDate: { type: "string" }, weight: { type: "number" }, notes: { type: "string" } }, required: ["eggId"] },
+      inputSchema: { type: "object", properties: { eggId: { type: "string" }, sex: { type: "string", enum: ["♂", "♀", "不明"] }, morph: { type: "string" }, base: { type: "string" }, homo: { type: "string" }, het: { type: "string" }, hatchDate: { type: "string" }, weight: { type: "number" }, notes: { type: "string" } }, required: ["eggId"] },
       execute: wrap("孵化を記録しています", async i => { const r = await hatchEgg(i); done(r.egg + " → " + r.gecko.id, r.gecko.id); return { eggId: r.egg, offspring: brief(r.gecko) }; }) },
     { name: "mark_egg_failed", description: "卵を不良として記録（無精卵・死籠り・カビ・腐敗・凹み・破損・その他）。",
       inputSchema: { type: "object", properties: { eggId: { type: "string" }, reason: { type: "string", enum: FAIL_REASONS }, date: { type: "string" } }, required: ["eggId"] },
@@ -2861,7 +2944,7 @@ $("#chat-in").addEventListener("keydown", e => { if (e.key === "Enter" && (e.met
 document.addEventListener("keydown", e => { if (e.key === "Escape" && sheets.length) closeSheet(sheets[sheets.length - 1]); });
 
 /* ---------- app: budget / backup strip, settings, automatic backup, updates ---------- */
-const APP_VERSION = "2026-10-21-6";
+const APP_VERSION = "2026-10-21-7";
 const fmtGB = b => (b / 1e9).toFixed(b >= 1e10 ? 0 : 1) + "GB";
 const fmtTime = t => t ? new Date(t).toLocaleString("ja-JP", { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" }) : "まだありません";
 function setPill(el, { val, ratio, state }) {
@@ -2932,10 +3015,10 @@ function settingsSheet(focus) {
           <button class="btn sm" data-sx="unlink" style="align-self:flex-start">Dropboxとのつなぎを外す</button>`}
         <p class="note">売れてから1年たった個体の写真はバックアップから外します（iPhoneの中には残ります）。</p>
       </section>
-      <section class="setsec" id="sec-catalog"><h3>卸カタログの公開（GitHub）</h3>
+      <section class="setsec" id="sec-catalog"><h3>お客様用ページの公開（GitHub）</h3>
         <div class="field"><label for="st-gh">GitHubの鍵 ${st.ghToken ? `<span class="pill s-sale">設定済み …${esc(st.ghToken.slice(-4))}</span>` : `<span class="pill s-hold">未設定</span>`}</label>
           <div class="idrow"><input id="st-gh" type="password" autocomplete="off" placeholder="${st.ghToken ? "変えるときだけ入力" : "github_pat_…"}" aria-label="GitHubの鍵"><button class="btn" data-sx="gh">保存</button></div>
-          <p class="note">卸モードの「お客様用ページに公開」で使います。鍵はこのiPhoneの中にだけ保存されます。公開ページ: <span class="mono">${esc(BM.catalog.url)}</span></p></div>
+          <p class="note">卸モード・販売モードの「お客様用ページに公開」で使います。鍵はこのiPhoneの中にだけ保存されます。<br>卸: <span class="mono">${esc(BM.catalog.url)}</span><br>販売: <span class="mono">${esc(BM.shop.url)}</span></p></div>
       </section>
       <section class="setsec" id="sec-trash"><h3>削除した個体</h3>
         <p class="note" style="margin:0">削除してから24時間は、ここから復活できます。</p>

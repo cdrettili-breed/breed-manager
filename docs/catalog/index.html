@@ -121,7 +121,7 @@ function render() {
         return `<article class="card">
           ${ph.length ? `<button class="photo count-badge" data-ph="${esc(x.wno)}" aria-label="No.${esc(x.wno)} の写真を見る"><img src="${esc(ph[0])}" alt="No.${esc(x.wno)} ${esc(x.morph)}" loading="lazy">${ph.length > 1 ? `<span>${ph.length}枚</span>` : ""}</button>` : `<div class="photo none">写真準備中</div>`}
           <div class="body"><div class="top"><span class="id">No.${esc(x.wno ?? "")}</span><span class="sex">${esc(sexText(x.sex))}</span></div>
-            <div class="morph">${esc(x.morph || "—")}</div>${x.morphEn && x.morphEn !== x.morph ? `<div class="en">${esc(x.morphEn)}</div>` : ""}
+            <div class="morph">${esc(x.morph || "—")}</div>${x.morphEn && x.morphEn !== x.morph ? `<div class="en">${esc(x.morphEn)}</div>` : ""}${x.het ? `<div class="en">${esc(x.het)}</div>` : ""}
             <div class="foot"><span>${x.birthDate ? esc(x.birthDate.replace(/-/g, ".")) + " 生まれ" + (ageText(x.birthDate) ? "（" + esc(ageText(x.birthDate)) + "）" : "") : ""}</span><span class="price${x.price == null ? " ask" : ""}">${esc(yen(x.price))}</span></div></div></article>`;
       }).join("")}</div>`;
 }

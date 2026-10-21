@@ -355,8 +355,8 @@
   /* ---------- public wholesale catalog: published into this app's own GitHub Pages site ----------
      One commit per publish (Git Data API): new photos as blobs, removed photos deleted, catalog.json replaced.
      Needs a fine-grained token with Contents read/write on the repository, kept only on this iPhone. */
-  const GH = { owner: "cdrettili-breed", repo: "breed-manager", branch: "main", dir: "docs/catalog" };
-  const CATALOG_URL = "https://cdrettili-breed.github.io/breed-manager/catalog/";
+  const GH = { owner: "cdrettili-breed", repo: "breed-manager", branch: "main" };
+  const SITE = "https://cdrettili-breed.github.io/breed-manager/";
   async function gh(path, opts = {}) {
     const st = await settings.get(); if (!st.ghToken) throw err("no_gh", "GitHubの鍵が未設定です。設定の「卸カタログの公開」で入れてください");
     const r = await fetch("https://api.github.com" + path, { ...opts, headers: { Authorization: "Bearer " + st.ghToken, Accept: "application/vnd.github+json", "X-GitHub-Api-Version": "2022-11-28", ...(opts.body ? { "Content-Type": "application/json" } : {}) } });
@@ -368,37 +368,40 @@
     return r.status === 204 ? null : r.json();
   }
   const toB64 = async blob => { const buf = new Uint8Array(await blob.arrayBuffer()); let s = ""; for (let i = 0; i < buf.length; i += 0x8000) s += String.fromCharCode(...buf.subarray(i, i + 0x8000)); return btoa(s); };
-  const catalogPub = {
-    url: CATALOG_URL,
-    async state() { return (await kvGet("catalog_pub")) || {}; },
+  /* one publisher per public list: the wholesale catalog (docs/catalog) and the retail list (docs/shop) */
+  const makePub = ({ dir, kv, title, what }) => ({
+    url: SITE + dir + "/",
+    async state() { return (await kvGet(kv)) || {}; },
     async publish(cat, onProgress) {
       const P = `/repos/${GH.owner}/${GH.repo}`;
       const ref = await gh(`${P}/git/ref/heads/${GH.branch}`), baseSha = ref.object.sha;
       const baseCommit = await gh(`${P}/git/commits/${baseSha}`);
-      const pub = (await kvGet("catalog_pub")) || {}, have = new Set(pub.photos || []), want = new Set();
+      const pub = (await kvGet(kv)) || {}, have = new Set(pub.photos || []), want = new Set();
       const items = (cat.items || []).slice().sort((a, b) => (a.wno ?? 0) - (b.wno ?? 0)).map(x => {
         const ph = (x.photos || []).slice(0, 4); ph.forEach(id => want.add(id));
-        return { id: "No." + x.wno, wno: x.wno, sex: x.sex || "", morph: x.morph || "", morphEn: x.morphEn || "", birthDate: x.birthDate || "", price: x.price ?? null, photos: ph.map(id => "photos/" + id + ".jpg") };
+        return { id: "No." + x.wno, wno: x.wno, sex: x.sex || "", morph: x.morph || "", morphEn: x.morphEn || "", het: x.het || "", birthDate: x.birthDate || "", price: x.price ?? null, photos: ph.map(id => "photos/" + id + ".jpg") };
       });
       const tree = [], published = new Set([...have].filter(id => want.has(id)));
       let n = 0; const todo = [...want].filter(id => !have.has(id));
       for (const id of todo) {
         const b = await getBlob(id); if (!b) continue;
         const blob = await gh(`${P}/git/blobs`, { method: "POST", body: JSON.stringify({ content: await toB64(b), encoding: "base64" }) });
-        tree.push({ path: `${GH.dir}/photos/${id}.jpg`, mode: "100644", type: "blob", sha: blob.sha }); published.add(id);
+        tree.push({ path: `docs/${dir}/photos/${id}.jpg`, mode: "100644", type: "blob", sha: blob.sha }); published.add(id);
         onProgress?.(++n, todo.length);
       }
-      for (const id of have) if (!want.has(id)) tree.push({ path: `${GH.dir}/photos/${id}.jpg`, mode: "100644", type: "blob", sha: null });
-      tree.push({ path: `${GH.dir}/catalog.json`, mode: "100644", type: "blob", content: JSON.stringify({ title: cat.title || "卸リスト", updatedAt: new Date().toISOString(), items }) });
+      for (const id of have) if (!want.has(id)) tree.push({ path: `docs/${dir}/photos/${id}.jpg`, mode: "100644", type: "blob", sha: null });
+      tree.push({ path: `docs/${dir}/catalog.json`, mode: "100644", type: "blob", content: JSON.stringify({ title: cat.title || title, updatedAt: new Date().toISOString(), items }) });
       const newTree = await gh(`${P}/git/trees`, { method: "POST", body: JSON.stringify({ base_tree: baseCommit.tree.sha, tree }) });
-      const commit = await gh(`${P}/git/commits`, { method: "POST", body: JSON.stringify({ message: `卸カタログを更新（${items.length}頭）`, tree: newTree.sha, parents: [baseSha] }) });
+      const commit = await gh(`${P}/git/commits`, { method: "POST", body: JSON.stringify({ message: `${what}を更新（${items.length}頭）`, tree: newTree.sha, parents: [baseSha] }) });
       await gh(`${P}/git/refs/heads/${GH.branch}`, { method: "PATCH", body: JSON.stringify({ sha: commit.sha }) });
-      await kvSet("catalog_pub", { photos: [...published], at: Date.now(), count: items.length });
-      return { count: items.length, url: CATALOG_URL };
+      await kvSet(kv, { photos: [...published], at: Date.now(), count: items.length });
+      return { count: items.length, url: SITE + dir + "/" };
     },
-  };
+  });
+  const catalogPub = makePub({ dir: "catalog", kv: "catalog_pub", title: "卸リスト", what: "卸カタログ" });
+  const shopPub = makePub({ dir: "shop", kv: "shop_pub", title: "販売リスト", what: "販売リスト" });
 
-  window.BM = { settings, budget, backup, data, db, catalog: catalogPub };
+  window.BM = { settings, budget, backup, data, db, catalog: catalogPub, shop: shopPub };
   const caps = { db, assets, sample, downloads };
   window.claude = Object.freeze({ use: name => Promise.resolve(caps[name] || null) });
 })();
