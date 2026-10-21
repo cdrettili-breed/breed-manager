@@ -143,6 +143,17 @@ h2,h3{font-family:var(--f-display);font-weight:700;margin:0;text-wrap:balance}
 .send svg{width:20px;height:20px;fill:none;stroke:currentColor;stroke-width:2.2;stroke-linecap:round;stroke-linejoin:round}
 .send.stop{background:var(--ink);color:var(--bg)}
 .scan-in{width:42px;height:42px;border-radius:50%;border:1px solid var(--line);background:var(--surface);color:var(--ink);display:grid;place-items:center;flex:none}
+.scan-in.att{margin-left:-2px}
+.attrow{display:flex;gap:6px;flex-wrap:wrap}
+.attrow:empty{display:none}
+.att-chip{display:flex;align-items:center;gap:6px;border:1px solid var(--line);background:var(--surface);border-radius:10px;padding:3px 6px 3px 3px;font-size:12px;max-width:100%}
+.att-chip img{width:36px;height:36px;object-fit:cover;border-radius:7px;display:block}
+.att-chip .ficon{width:36px;height:36px;border-radius:7px;background:var(--sunk);display:grid;place-items:center;font:600 10px var(--f-mono);color:var(--muted)}
+.att-chip .nm{max-width:140px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.att-chip button{border:0;background:none;color:var(--muted);font-size:16px;padding:0 2px}
+.msg .atts{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:6px}
+.msg .atts img{width:72px;height:72px;object-fit:cover;border-radius:8px;display:block}
+.msg .atts span{font-size:12px;opacity:.85}
 .tier{display:flex;gap:4px;align-items:center;font-size:12px;color:var(--muted)}
 .tier button{border:1px solid var(--line);background:none;border-radius:999px;padding:2px 10px;font-size:12px;color:var(--muted)}
 .tier button[aria-pressed="true"]{background:var(--sunk);color:var(--ink);border-color:var(--muted)}
@@ -361,9 +372,11 @@ details.more>div{padding:0 12px 12px;display:flex;flex-direction:column;gap:12px
       <div class="msgs gut" id="msgs"></div>
       <div class="composer gut">
         <div class="chips" id="sugg"></div>
+        <div class="attrow" id="att-row"></div>
         <div class="inrow">
           <button class="scan-in" data-act="scan-chat" aria-label="QRを読み取ってIDを入力"><svg viewBox="0 0 24 24"><path d="M4 8V5a1 1 0 0 1 1-1h3M16 4h3a1 1 0 0 1 1 1v3M20 16v3a1 1 0 0 1-1 1h-3M8 20H5a1 1 0 0 1-1-1v-3M8 9h3v3H8zM13 13h3v3h-3zM13 9h3M8 15h2"/></svg></button>
-          <textarea id="chat-in" rows="1" placeholder="例: 26-0012を1.8万で販売" aria-label="Claudeへのメッセージ"></textarea>
+          <button class="scan-in att" data-act="attach" aria-label="写真やファイルを添付"><svg viewBox="0 0 24 24"><path d="M20 11.5 12.4 19a5 5 0 0 1-7.1-7.1l8-8a3.5 3.5 0 0 1 5 5l-8 8a2 2 0 0 1-2.8-2.8l7.3-7.3"/></svg></button>
+          <textarea id="chat-in" rows="1" placeholder="例: 26-0012を販売" aria-label="Claudeへのメッセージ"></textarea>
           <button class="send" id="send" aria-label="送信"><svg viewBox="0 0 24 24"><path d="M5 12h13M13 6l6 6-6 6"/></svg></button>
         </div>
         <div class="tier" id="tier"><span>応答:</span><button data-tier="quick">速い</button><button data-tier="default">丁寧</button><span id="chat-note" style="margin-left:auto"></span></div>
@@ -384,6 +397,7 @@ details.more>div{padding:0 12px 12px;display:flex;flex-direction:column;gap:12px
 <div id="toast" hidden></div>
 <input type="file" id="scan-file" accept="image/*" capture="environment" hidden>
 <input type="file" id="photo-file" accept="image/*" hidden>
+<input type="file" id="chat-file" accept="image/*,application/pdf,text/plain,text/csv,.csv,.txt,.json,.md" multiple hidden>
 <input type="file" id="photo-cam" accept="image/*" capture="environment" hidden>
 <div id="catalog-page" hidden></div>
 
@@ -2971,6 +2985,14 @@ function makeTools(log, status) {
         if (base && !Object.keys(parseMorph(base, []).genes).length) throw new Error("ベースモルフから遺伝子を読み取れません: " + base);
         const r = await setLine(i.name, base, i.en); done("ライン " + r.name + (r.base ? " = " + r.base : " を削除"), null); return { lines: S.lines };
       }) },
+    { name: "save_attached_photo", description: "チャットに添付された写真（[添付N: 写真 …] の N）を、個体の写真として保存する。",
+      inputSchema: { type: "object", properties: { gecko_id: { type: "string" }, attachment: { type: "number", description: "添付の番号 N" } }, required: ["gecko_id", "attachment"] },
+      execute: wrap("写真を保存しています", async i => {
+        const a = chatAtt[(Number(i.attachment) || 0) - 1];
+        if (!a || a.kind !== "image") throw new Error("添付" + i.attachment + " の写真が見つかりません（アプリを開き直すと添付は消えます）");
+        const g = await addPhoto(normId(i.gecko_id), a.blob);
+        done(g.id + " に写真を追加", g.id); return { id: g.id, photos: (g.photos || []).length };
+      }) },
     { name: "set_custom_temp", description: "産卵記録で選べる3つ目の孵卵温度（℃）を設定する。28.5と31.5は固定。空にすると消える。",
       inputSchema: { type: "object", properties: { temp: { type: "number" } } },
       execute: wrap("設定しています", async i => { const t = i.temp == null ? null : toNum(i.temp); await saveMeta("settings", { customTemp: t }); S.settings.customTemp = t; done("温度の選択肢 " + tempOptions().join("・") + "℃", null); return { options: tempOptions() }; }) },
@@ -3002,7 +3024,7 @@ function renderChat(pending) {
       ${ses.length ? `<div class="sesh"><div class="sesh-h">これまでの会話</div>${ses.slice(0, showAllSessions ? 10 : 4).map((x, i) => `<button class="sesrow" data-ses="${i}"><span class="sestitle">${esc(x.title)}</span><span class="sesdate">${esc(md(x.at.slice(0, 10)))}</span></button>`).join("")}${ses.length > 4 && !showAllSessions ? `<button class="sesmore" data-act="ses-more">ほかの会話も表示（${ses.length - 4}件）</button>` : ""}</div>` : ""}
       ${!S.hasKey ? `<p class="small">チャットを使うには、上の「予算」から設定を開いてClaudeのAPIキーを入れてください。</p>` : ""}</div>`;
   } else {
-    m.innerHTML = turns.map(t => t.role === "user" ? `<div class="msg user">${esc(t.content)}</div>`
+    m.innerHTML = turns.map(t => t.role === "user" ? `<div class="msg user">${t.att?.length ? `<div class="atts">${t.att.map(a => chatAtt[a.n - 1]?.url ? `<img src="${chatAtt[a.n - 1].url}" alt="${esc(a.name)}">` : `<span>📎 ${esc(a.name)}</span>`).join("")}</div>` : ""}${esc(t.content)}</div>`
       : `<div class="msg bot${t.error ? " err" : ""}">${mdHTML(t.content)}${t.actions?.length ? `<div class="acts">${t.actions.map(a => a.id ? `<button class="act" data-open="${esc(a.id)}">${esc(a.txt)}</button>` : `<span class="act">${esc(a.txt)}</span>`).join("")}</div>` : ""}</div>`).join("")
       + (pending ? `<div class="msg bot" id="pend"><div class="thinking"><span class="dots"><i></i><i></i><i></i></span><span id="pend-s">考えています</span></div></div>` : "");
   }
@@ -3027,15 +3049,64 @@ function suggEditSheet() {
   } });
 }
 const ERR = { not_granted: "Claudeの利用が許可されていません。", sampling_disabled: "このアカウントではClaudeを呼び出せません。", rate_limited: "混み合っています。少し待ってからもう一度送ってください。", session_expired: "サインインし直してください。", refused: "この内容には答えられませんでした。言い方を変えてください。", prompt_too_large: "会話が長くなりすぎました。履歴を消してください。", tools_unavailable: "この画面ではツールが使えません。", no_key: "チャットを使うには、上の「予算」から設定を開いてClaudeのAPIキーを入れてください。", budget: "今月の予算に達しました。上の「予算」から予算を見直せます。", bad_key: "APIキーが正しくありません。設定で入れ直してください。", no_credit: "Anthropicのクレジットが足りません。Anthropicの管理画面でチャージしてください。" };
+/* chat attachments: photos (shrunk to 1568px like the API wants), PDFs and text/CSV files. They are sent with the
+   message they belong to; later turns only carry their labels ([添付N: …]) so they are not paid for again.
+   Photos stay in memory for this conversation so Claude can save one to a gecko (save_attached_photo). */
+let pendingAtt = [], chatAtt = [];
+const ATT_KIND = { image: "写真", pdf: "PDF", text: "ファイル" };
+const blobB64 = b => new Promise((res, rej) => { const r = new FileReader(); r.onload = () => res(String(r.result).split(",")[1]); r.onerror = () => rej(r.error); r.readAsDataURL(b); });
+async function readAttachment(file) {
+  const name = file.name || "添付", type = file.type || "";
+  if (type.startsWith("image/")) {
+    const img = await loadImg(file), iw = img.width || img.naturalWidth, ih = img.height || img.naturalHeight;
+    const sc = Math.min(1, 1568 / Math.max(iw, ih)), c = document.createElement("canvas");
+    c.width = Math.round(iw * sc); c.height = Math.round(ih * sc); c.getContext("2d").drawImage(img, 0, 0, c.width, c.height);
+    const blob = await new Promise((res, rej) => c.toBlob(b => b ? res(b) : rej(new Error("画像を作れませんでした")), "image/jpeg", 0.85));
+    return { kind: "image", name, media: "image/jpeg", data: await blobB64(blob), blob, url: URL.createObjectURL(blob) };
+  }
+  if (type === "application/pdf" || /\.pdf$/i.test(name)) {
+    if (file.size > 10 * 1048576) throw new Error(name + " は大きすぎます（10MBまで）");
+    return { kind: "pdf", name, media: "application/pdf", data: await blobB64(file) };
+  }
+  if (type.startsWith("text/") || /\.(csv|txt|json|md|tsv)$/i.test(name)) {
+    const t = await file.text();
+    return { kind: "text", name, data: t.length > 150000 ? t.slice(0, 150000) + "\n…（長いので途中まで）" : t };
+  }
+  throw new Error(name + " は添付できません（写真・PDF・テキスト/CSVが使えます）");
+}
+const attLabel = a => `[添付${a.n}: ${ATT_KIND[a.kind]} ${a.name}]`;
+function renderAtt() {
+  $("#att-row").innerHTML = pendingAtt.map((a, i) => `<span class="att-chip">${a.url ? `<img src="${a.url}" alt="">` : `<span class="ficon">${a.kind === "pdf" ? "PDF" : "TXT"}</span>`}<span class="nm">${esc(a.name)}</span><button data-attdel="${i}" aria-label="${esc(a.name)} を外す">×</button></span>`).join("");
+}
+$("#chat-file").addEventListener("change", async e => {
+  const files = [...(e.target.files || [])]; e.target.value = "";
+  for (const f of files.slice(0, 6)) {
+    try { const a = await readAttachment(f); pendingAtt.push(a); renderAtt(); } catch (x) { toast(x.message); }
+  }
+});
+$("#att-row").addEventListener("click", e => { const b = e.target.closest("[data-attdel]"); if (!b) return; const a = pendingAtt.splice(+b.dataset.attdel, 1)[0]; if (a?.url) URL.revokeObjectURL(a.url); renderAtt(); });
+function attBlocks(list) {
+  return list.map(a => a.kind === "image" ? { type: "image", source: { type: "base64", media_type: a.media, data: a.data } }
+    : a.kind === "pdf" ? { type: "document", source: { type: "base64", media_type: "application/pdf", data: a.data }, title: a.name }
+    : { type: "text", text: `${attLabel(a)}\n${a.data}` });
+}
 async function send(text) {
-  text = text.trim(); if (!text || ctl) return;
+  text = text.trim(); if ((!text && !pendingAtt.length) || ctl) return;
   if (!sample || !toolsOk) { toast("チャットを使えません。アプリを開き直してください"); return; }
-  turns.push({ role: "user", content: text }); $("#chat-in").value = ""; autosize();
+  const atts = pendingAtt.map(a => ({ ...a, n: chatAtt.push(null) }));
+  for (const a of atts) chatAtt[a.n - 1] = a;
+  pendingAtt = []; renderAtt();
+  turns.push({ role: "user", content: text || "添付を見てください", att: atts.map(a => ({ n: a.n, kind: a.kind, name: a.name })), _blocks: atts.length ? attBlocks(atts) : null });
+  $("#chat-in").value = ""; autosize();
   renderChat(true); setSending(true);
   const log = [];
   const status = s => { const e = $("#pend-s"); if (e) e.textContent = s + "…"; };
   ctl = new AbortController();
-  const hist = turns.slice(-14).map(t => ({ role: t.role, content: t.content + (t.actions?.length ? "\n[実行: " + t.actions.map(a => a.txt).join(", ") + "]" : "") }));
+  const last = turns.length - 1;
+  const hist = turns.slice(-14).map((t, i, arr) => {
+    const txt = (t.att?.length ? t.att.map(attLabel).join("\n") + "\n" : "") + t.content + (t.actions?.length ? "\n[実行: " + t.actions.map(a => a.txt).join(", ") + "]" : "");
+    return { role: t.role, content: t._blocks && turns.indexOf(t) === last ? [...t._blocks, { type: "text", text: txt }] : txt };
+  });
   while (hist.length && hist[0].role !== "user") hist.shift();
   try {
     const { text: ans } = await sample(hist, { system: rulesText(),
@@ -3048,7 +3119,7 @@ async function send(text) {
     else turns.push({ role: "assistant", content: (e?.text ? e.text + "\n\n" : "") + (ERR[e?.code] || "うまく応答できませんでした。もう一度送ってください。"), actions: log, error: true });
   } finally {
     ctl = null; setSending(false);
-    turns = turns.slice(-40); lsSet("leopa.chat", turns); renderChat(false);
+    turns = turns.slice(-40); saveTurns(); renderChat(false);
   }
 }
 function setSending(on) {
@@ -3060,10 +3131,12 @@ function renderTier() { for (const b of document.querySelectorAll("#tier [data-t
 /* past conversations live on this device only; starting a new conversation files the current one */
 let showAllSessions = false;
 const sessions = () => lsGet("leopa.sessions", []);
+const plainTurns = l => l.map(({ _blocks, ...t }) => t);
+const saveTurns = () => lsSet("leopa.chat", plainTurns(turns));
 function archiveTurns() {
   if (!turns.length) return;
   const first = turns.find(t => t.role === "user");
-  lsSet("leopa.sessions", [{ at: nowTs(), title: first ? first.content.slice(0, 60) : "会話", turns }, ...sessions()].slice(0, 10));
+  lsSet("leopa.sessions", [{ at: nowTs(), title: first ? first.content.slice(0, 60) : "会話", turns: plainTurns(turns) }, ...sessions()].slice(0, 10));
 }
 function restoreSession(i) {
   const list = sessions(), s = list[i]; if (!s) return;
@@ -3087,6 +3160,7 @@ document.addEventListener("click", e => {
   const act = t.closest("[data-act]"); if (!act) return;
   const a = act.dataset.act;
   if (a === "scan") startScan(openRecord);
+  else if (a === "attach") { if (!S.hasKey) { toast("チャットを使うには設定でAPIキーを入れてください"); return; } $("#chat-file").click(); }
   else if (a === "scan-chat") startScan(id => { const i = $("#chat-in"); i.value = (i.value.trim() ? i.value.trimEnd() + " " : "") + id + " "; autosize(); i.focus(); toast(id + " を入力しました"); });
   else if (a === "queue") queueSheet();
   else if (a === "settings") settingsSheet(act.dataset.sec);
@@ -3098,7 +3172,7 @@ document.addEventListener("click", e => {
   else if (a === "add-menu") addMenu();
   else if (a === "sugg-edit") suggEditSheet();
   else if (a === "pair") pairingFlow(); else if (a === "lay") layPicker(); else if (a === "hatch") hatchPicker();
-  else if (a === "clear-chat") { archiveTurns(); turns = []; lsSet("leopa.chat", turns); showAllSessions = false; renderChat(false); renderTier(); }
+  else if (a === "clear-chat") { archiveTurns(); turns = []; chatAtt = []; lsSet("leopa.chat", turns); showAllSessions = false; renderChat(false); renderTier(); }
   else if (a === "ses-more") { showAllSessions = true; renderChat(false); }
 });
 $("#send").addEventListener("click", () => { if (ctl) ctl.abort(); else send($("#chat-in").value).then(renderTier); });
@@ -3107,7 +3181,7 @@ $("#chat-in").addEventListener("keydown", e => { if (e.key === "Enter" && (e.met
 document.addEventListener("keydown", e => { if (e.key === "Escape" && sheets.length) closeSheet(sheets[sheets.length - 1]); });
 
 /* ---------- app: budget / backup strip, settings, automatic backup, updates ---------- */
-const APP_VERSION = "2026-10-22-1";
+const APP_VERSION = "2026-10-22-2";
 const fmtGB = b => (b / 1e9).toFixed(b >= 1e10 ? 0 : 1) + "GB";
 const fmtTime = t => t ? new Date(t).toLocaleString("ja-JP", { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" }) : "まだありません";
 function setPill(el, { val, ratio, state }) {
