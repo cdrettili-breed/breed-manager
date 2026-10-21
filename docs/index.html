@@ -520,6 +520,7 @@ const GENES = [
   { k: "blizzard", name: "ブリザード", type: "rec", al: ["ブリザード", "blizzard"] },
   { k: "murphy", name: "マーフィーパターンレス", type: "rec", al: ["マーフィーパターンレス", "パターンレス", "マーフィー", "murphy"] },
   { k: "marble", name: "マーブルアイ", type: "rec", al: ["マーブルアイ", "marble eye"] },
+  { k: "satin", name: "サテン", type: "rec", al: ["サテン", "satin"] },
 ];
 const COMBOS = [
   { name: "ダイアブロブランコ", set: ["tremper", "blizzard", "eclipse"], al: ["ダイアブロブランコ", "diablo blanco"] },
@@ -527,7 +528,16 @@ const COMBOS = [
   { name: "レーダー", set: ["bell", "eclipse"], al: ["レーダー", "radar"] },
   { name: "タイフーン", set: ["rain", "eclipse"], al: ["タイフーン", "typhoon"] },
   { name: "トータルエクリプス", set: ["msnow:2", "eclipse"], al: ["トータルエクリプス", "total eclipse"] },
+  { name: "ブレイジングブリザード", set: ["tremper", "blizzard"], al: ["ブレイジングブリザード", "blazing blizzard"] },
+  { name: "エンバー", set: ["tremper", "eclipse", "murphy"], al: ["エンバー", "ember"] },
+  { name: "アプター", set: ["tremper", "murphy"], al: ["アプター", "aptor"] },
+  { name: "ドリームシクル", set: ["enigma", "tremper", "eclipse"], al: ["ドリームシクル", "dreamsicle"] },
+  { name: "ブラックホール", set: ["msnow", "enigma", "eclipse"], al: ["ブラックホール", "black hole"] },
 ];
+/* a set of visible genes named by the largest combo it contains: [tremper, eclipse, msnow] → ラプター + マックスノー */
+function comboOf(vis) {
+  return COMBOS.filter(cb => cb.set.every(k => vis.includes(k))).sort((a, b) => b.set.length - a.set.length)[0] || null;
+}
 const POLY = ["スーパーハイポタンジェリン", "ハイポタンジェリン", "スーパーハイポ", "ハイイエロー", "タンジェリン", "ハイポ", "キャロットテール", "キャロットヘッド", "ボールドストライプ", "レッドストライプ", "リバースストライプ", "ストライプ", "ボールド", "ジャングル", "ブラッド", "サングロー", "エメリン", "ブラックナイト", "ゴースト"];
 /* Japanese → English morph names for the business card */
 const EN = [
@@ -537,6 +547,7 @@ const EN = [
   ["ホワイトアンドイエロー", "White & Yellow"], ["ホワイト&イエロー", "White & Yellow"], ["レモンフロスト", "Lemon Frost"], ["マックスノー", "Mack Snow"], ["マックスノウ", "Mack Snow"], ["マーブルアイ", "Marble Eye"],
   ["キャロットテール", "Carrot Tail"], ["キャロットヘッド", "Carrot Head"], ["ボールドストライプ", "Bold Stripe"], ["レッドストライプ", "Red Stripe"], ["リバースストライプ", "Reverse Stripe"],
   ["ブラックナイト", "Black Night"], ["パターンレス", "Murphy Patternless"], ["トレンパー", "Tremper Albino"], ["エクリプス", "Eclipse"], ["ブリザード", "Blizzard"], ["エニグマ", "Enigma"],
+  ["ドリームシクル", "Dreamsicle"], ["ブラックホール", "Black Hole"], ["エンバー", "Ember"], ["アプター", "APTOR"], ["サテン", "Satin"],
   ["ラプター", "RAPTOR"], ["レーダー", "RADAR"], ["タイフーン", "Typhoon"], ["ハイイエロー", "High Yellow"], ["タンジェリン", "Tangerine"], ["ストライプ", "Stripe"], ["ジャングル", "Jungle"],
   ["サングロー", "Sunglow"], ["エメリン", "Emerine"], ["ゴースト", "Ghost"], ["ブラッド", "Blood"], ["ボールド", "Bold"], ["ハイポ", "Hypo"], ["ノーマル", "Normal"], ["ワイルド", "Wild Type"],
   ["ポッシブル", "Possible"], ["ポシブル", "Possible"], ["ベル", "Bell Albino"], ["マーフィー", "Murphy Patternless"], ["アルビノ", "Albino"], ["スノー", "Snow"],
@@ -618,13 +629,14 @@ function predictMorphs(damMorph, sireMorph) {
      (ストーンウォッシュ × タンジェリントレンパー → タンジェリントレンパー) */
   const has = (P, l) => P.lines.some(x => x.name === l.name);
   const parentLines = [...A.lines, ...B.lines].filter((l, i, a) => a.findIndex(x => x.name === l.name) === i).map(l => ({ ...l, keys: lineKeys(l), both: has(A, l) && has(B, l) })).filter(l => l.keys.length).sort((a, b) => b.both - a.both || b.keys.length - a.keys.length);
+  /* visible genes → names, with combos named for what they are (トレンパー + エクリプス → ラプター) */
+  const named = vis => { const cb = comboOf(vis); return cb ? [cb.name, ...vis.filter(v => !cb.set.includes(v)).map(nameOf)] : vis.map(nameOf); };
   const out = [...groups.values()].map(gr => {
     const ln = parentLines.find(l => l.keys.every(k => gr.vis.includes(k)));
-    const label = (ln ? [ln.both ? ln.name : ln.base, ...gr.vis.filter(v => !ln.keys.includes(v)).map(nameOf)] : gr.vis.map(nameOf)).join(" ") || "ノーマル";
+    const label = (ln ? [ln.both ? ln.name : ln.base, ...named(gr.vis.filter(v => !ln.keys.includes(v)))] : named(gr.vis)).join(" ") || "ノーマル";
     const hets = Object.entries(gr.het).map(([k, hp]) => ({ name: GENES.find(x => x.k === k).name, p: hp / gr.p })).filter(h => h.p > 0.001).sort((a, b) => b.p - a.p);
     const hetText = hets.map(h => (h.p > 0.995 ? "" : Math.round(h.p * 100) + "%") + "het " + h.name).join(" ");
-    const combo = COMBOS.find(cb => cb.set.every(k => gr.vis.includes(k)));
-    return { p: gr.p, label, morph: ((label === "ノーマル" && !hetText) ? "ノーマル" : label + " " + hetText).trim(), hetText, combo: combo ? (gr.vis.length > combo.set.length ? combo.name + "を含む" : combo.name) : "" };
+    return { p: gr.p, label, morph: ((label === "ノーマル" && !hetText) ? "ノーマル" : label + " " + hetText).trim(), hetText, combo: "" };
   }).sort((a, b) => b.p - a.p).filter(c => c.p > 0.001);
   const traits = [...new Set([...A.traits, ...B.traits, ...A.unknown, ...B.unknown])];
   return { candidates: out.slice(0, 12), traits, parsedAny: genes.length > 0, unknown: [...new Set([...A.unknown, ...B.unknown])], lines: parentLines };
@@ -637,7 +649,8 @@ function oddsHTML(pred, n = 6) {
   if (!pred.parsedAny) return `<p class="note">親のモルフから遺伝子を判定できないため、確率は出せません。</p>`;
   return `<div class="hist">${pred.candidates.slice(0, n).map(c => `<div><span>${esc(c.label)}${c.hetText ? ` <span class="muted small">${esc(c.hetText)}</span>` : ""}</span><span class="mono">${pctText(c.p)}</span></div>`).join("")}</div>`;
 }
-const REC_GENES = GENES.filter(g => g.type === "rec");
+/* genes offered on the het buttons (マーブルアイ is still read when typed) */
+const REC_GENES = GENES.filter(g => g.type === "rec" && g.k !== "marble");
 /* who bred it: other breeders are entered on the gecko, our own CB uses the breeder name in settings */
 const cbOf = g => (g.origin === "自家繁殖" ? (S.settings.ownBreeder || "") : (g.breeder || "")).trim();
 const cbText = g => cbOf(g) ? cbOf(g) + " CB" : "";
@@ -1618,81 +1631,77 @@ function hatchPicker() {
     onPick: async (id, s) => { if (collOf(id) !== "eggs") throw new Error("卵のQRではありません（" + id + "）"); closeSheet(s); hatchForm(id); },
   });
 }
-/* one egg scan walks through every egg of its clutch still incubating: after each one is recorded (or marked bad,
-   or skipped) the next egg opens; the new geckos are printed together at the end */
-const newHatchRun = () => ({ done: [], seen: new Set(), queued: false, date: today() });
-async function nextEggOf(clutchId, run) {
-  const c = clutchId ? await getRec("clutches", clutchId).catch(() => null) : null;
-  if (!c) return null;
-  return (await eggsOf(c)).filter(x => x.status === "孵卵中" && !run.seen.has(x.id)).sort((a, b) => a.id.localeCompare(b.id))[0] || null;
-}
-async function continueHatch(e, run) {
-  run.seen.add(e.id);
-  const next = await nextEggOf(e.clutchId, run);
-  if (next) return hatchForm(next.id, run);
-  finishHatch(run);
-}
-function finishHatch(run) {
-  if (!run.done.length) return;
-  const last = run.done[run.done.length - 1];
-  setTimeout(() => { openGecko(last); if (!run.queued) printNow(run.done, "sticker").catch(x => toast(x.message)); }, 60);
-}
-async function hatchForm(eggId, run = newHatchRun()) {
+/* hatching: scanning any egg opens one screen with a card for every egg of that clutch still incubating.
+   Each card is hatched / bad / not yet; one button records them all and the new geckos are printed together. */
+async function hatchForm(eggId) {
   const e = await getRec("eggs", eggId).catch(() => null);
   if (!e) { toast(normId(eggId) + " という卵は見つかりません"); return; }
   if (e.status !== "孵卵中") { toast(e.id + " はすでに「" + e.status + "」です"); openEgg(e.id); return; }
   const [dam, sire, clutch] = await Promise.all([getRec("geckos", e.damId).catch(() => null), e.sireId ? getRec("geckos", e.sireId).catch(() => null) : null, e.clutchId ? getRec("clutches", e.clutchId).catch(() => null) : null]);
-  const sibs = clutch ? (await eggsOf(clutch)).sort((a, b) => a.id.localeCompare(b.id)) : [e];
-  const pos = sibs.findIndex(x => x.id === e.id) + 1, more = sibs.some(x => x.id !== e.id && x.status === "孵卵中" && !run.seen.has(x.id));
-  const pred = predictFor(dam, sire);
-  const days = daysBetween(e.layDate, today());
-  openSheet({ title: e.id + " の孵化" + (sibs.length > 1 ? `（${pos}/${sibs.length}個目）` : ""), render: s => {
+  const eggs = clutch ? (await eggsOf(clutch)).filter(x => x.status === "孵卵中").sort((a, b) => a.id.localeCompare(b.id)) : [e];
+  if (!eggs.some(x => x.id === e.id)) eggs.unshift(e);
+  const pred = predictFor(dam, sire), cands = pred.candidates.slice(0, 8);
+  const days = daysBetween(e.layDate, today()), done = new Map();
+  const card = (x, i) => `
+    <section class="setsec" data-egg="${i}" style="margin-top:12px">
+      <h3><span class="mono">${esc(x.id)}</span>${x.id === e.id ? ` <span class="pill s-grow">読み取った卵</span>` : ""} <span class="muted small">${i + 1}/${eggs.length}個目</span></h3>
+      ${fieldHTML({ k: "res-" + i, label: "結果", type: "seg", options: [["hatch", "孵化した"], ["fail", "不良"], ["wait", "まだ"]] }, "hatch")}
+      <div data-part="hatch">
+        ${pred.parsedAny ? `<div class="chips wrap">${cands.map((c, j) => `<button type="button" class="chip" data-cand="${i}:${j}" aria-pressed="false">${esc(c.label)} ${pctText(c.p)}</button>`).join("")}</div>` : ""}
+        ${pred.traits.length ? `<div class="chips wrap">${pred.traits.map((t, j) => `<button type="button" class="chip" data-trait="${i}:${j}">＋${esc(t)}</button>`).join("")}</div>` : ""}
+        ${fieldHTML({ k: "m-" + i, label: "モルフ", ph: "候補を選ぶか入力" }, "")}
+        ${fieldHTML({ k: "het-" + i, label: "het（候補を選ぶと入ります）", type: "het" }, "")}
+        ${fieldHTML({ k: "sx-" + i, label: "性別", type: "seg", options: ["♂", "♀", "不明"] }, "不明")}
+        ${fieldHTML({ k: "w-" + i, label: "体重（g）", type: "number", ph: "任意" }, "")}
+      </div>
+      <div data-part="fail" hidden>${fieldHTML({ k: "rs-" + i, label: "理由", type: "seg", options: FAIL_REASONS.slice(0, 3) }, "無精卵")}</div>
+    </section>`;
+  openSheet({ title: (clutch ? clutch.id : e.id) + " の孵化（卵" + eggs.length + "個）", render: s => {
     s.body.innerHTML = `
-      ${run.done.length ? `<div class="infobox">登録済み: ${run.done.map(esc).join("・")}　続けて次の卵です</div>` : ""}
-      <div class="infobox"><b class="mono">${esc(e.id)}</b> · 産卵 ${esc(md(e.layDate))}（${days}日目）${e.temp ? " · " + esc(e.temp) + "℃（" + esc(sexTrend(e.temp)) + "）" : ""}${sibs.length > 1 ? `<br>同じ産卵の卵: ${sibs.map(x => `<span class="mono">${esc(x.id)}</span>${x.status === "孵卵中" ? "" : "（" + esc(x.status) + "）"}`).join("・")}` : ""}</div>
+      <div class="infobox">産卵 ${esc(md(e.layDate))}（${days}日目）${e.temp ? " · " + esc(e.temp) + "℃（" + esc(sexTrend(e.temp)) + "）" : ""}</div>
       <dl class="kv"><dt>父</dt><dd>${idBtn(e.sireId)} ${esc(genoOf(sire))}</dd><dt>母</dt><dd>${idBtn(e.damId)} ${esc(genoOf(dam))}</dd></dl>
-      <h3 class="sec-h">モルフの候補 <span class="count">親のモルフから計算</span></h3>
-      ${pred.parsedAny ? `<div class="cands">${pred.candidates.map((c, i) => `<button class="cand" data-cand="${i}" aria-pressed="false"><span>${esc(c.label)}${c.combo ? `（${esc(c.combo)}）` : ""}</span><span class="pct">${pctText(c.p)}</span><span class="sub">${esc(c.hetText || "het なし")}</span></button>`).join("")}</div>
-        <p class="note">潜性（劣性）遺伝子のhetは見た目で分からないため、確率で表示しています。見た目に合う候補を選んでください。</p>`
-        : `<p class="note">親のモルフから遺伝子を判定できませんでした。下の入力欄に直接入力してください。</p>`}
-      ${pred.traits.length ? `<h3 class="sec-h">親の形質を追加 <span class="count">タップで追記</span></h3><div class="chips wrap">${pred.traits.map((t, i) => `<button class="chip" data-trait="${i}">${esc(t)}</button>`).join("")}</div>` : ""}
+      <h3 class="sec-h">生まれる子の予想 <span class="count">親のモルフとhetから計算</span></h3>
+      ${oddsHTML(pred, 8)}
       ${pred.unknown.length ? `<p class="note">遺伝子として判定できなかった語: ${pred.unknown.map(esc).join("、")}。ラインなら、設定の「ライン」で元のモルフを登録すると次から計算に入ります。</p>` : ""}
-      <form class="form" novalidate style="margin-top:16px">
-        ${fieldHTML({ k: "h-morph", label: "モルフ", ph: "候補を選ぶか入力" }, "")}
-        ${fieldHTML({ k: "h-het", label: "het（候補を選ぶと入ります）", type: "het" }, "")}
-        ${fieldHTML({ k: "h-sex", label: "性別", type: "seg", options: ["♂", "♀", "不明"] }, "不明")}
-        ${fieldHTML({ k: "h-date", label: "孵化日", type: "date" }, run.date)}
-        <details class="more"><summary>体重・メモ（必要なときだけ）</summary><div>
-        ${fieldHTML({ k: "h-weight", label: "体重（g）", type: "number", ph: "任意" }, "")}
-        ${fieldHTML({ k: "h-notes", label: "メモ", ph: "任意" }, "")}</div></details>
+      <form class="form" novalidate>
+        ${fieldHTML({ k: "h-date", label: "孵化日（全部の卵に使います）", type: "date" }, today())}
+        ${eggs.map(card).join("")}
         <p class="form-err" role="alert" hidden></p>
-        <button class="btn primary block big" type="submit">孵化を記録して子のIDを発行${more ? "（次の卵へ）" : ""}</button>
-      </form>
-      <div class="botacts">
-        <button class="btn abtn" data-fail>孵化しなかった（不良）</button>
-        ${more ? `<button class="btn abtn" data-skip>この卵はまだ（次へ）</button>` : run.done.length ? `<button class="btn abtn" data-stop>ここで終える</button>` : ""}
-      </div>`;
-    const mi = $("#f-h-morph", s.body), hi = $("#f-h-het", s.body);
+        <button class="btn primary block big" type="submit">まとめて記録（${eggs.length}個）</button>
+      </form>`;
+    const form = $("form", s.body), val = k => form.querySelector(`input[name="f-${k}"]:checked`)?.value || "";
+    const sync = () => { for (const sec of form.querySelectorAll("[data-egg]")) { const r = val("res-" + sec.dataset.egg); $("[data-part=hatch]", sec).hidden = r !== "hatch"; $("[data-part=fail]", sec).hidden = r !== "fail"; } };
+    form.addEventListener("change", sync); sync();
     s.body.onclick = ev => {
       if (hetClick(s.body, ev)) return;
       const c = ev.target.closest("[data-cand]");
-      if (c) { for (const b of s.body.querySelectorAll("[data-cand]")) b.setAttribute("aria-pressed", String(b === c)); const cd = pred.candidates[+c.dataset.cand]; mi.value = cd.label; hi.value = cd.hetText || ""; return; }
+      if (c) {
+        const [i, j] = c.dataset.cand.split(":"), cd = cands[+j];
+        for (const b of s.body.querySelectorAll(`[data-cand^="${i}:"]`)) b.setAttribute("aria-pressed", String(b === c));
+        $("#f-m-" + i, s.body).value = cd.label; $("#f-het-" + i, s.body).value = cd.hetText || ""; return;
+      }
       const tr = ev.target.closest("[data-trait]");
-      if (tr) { const t = pred.traits[+tr.dataset.trait]; if (!mi.value.includes(t)) mi.value = (t + " " + mi.value).trim(); return; }
-      if (ev.target.closest("[data-fail]")) { closeSheet(s); failForm(e, () => setTimeout(() => continueHatch(e, run), 60)); return; }
-      if (ev.target.closest("[data-skip]")) { closeSheet(s); continueHatch(e, run); return; }
-      if (ev.target.closest("[data-stop]")) { closeSheet(s); finishHatch(run); }
+      if (tr) { const [i, j] = tr.dataset.trait.split(":"), t = pred.traits[+j], mi = $("#f-m-" + i, s.body); if (!mi.value.includes(t)) mi.value = (t + " " + mi.value).trim(); }
     };
-    $("form", s.body).addEventListener("submit", async ev => {
+    form.addEventListener("submit", async ev => {
       ev.preventDefault(); const b = $("button[type=submit]", s.body), err = $(".form-err", s.body); b.disabled = true; err.hidden = true;
+      const date = $("#f-h-date", s.body).value || today();
+      let queued = false, cur = "";
       try {
-        const sx = s.body.querySelector('input[name="f-h-sex"]:checked');
-        run.date = $("#f-h-date", s.body).value || run.date;
-        const r = await hatchEgg({ eggId: e.id, morph: mi.value, het: hi.value, sex: sx ? sx.value : "不明", hatchDate: run.date, weight: $("#f-h-weight", s.body).value, notes: $("#f-h-notes", s.body).value });
-        run.done.push(r.gecko.id); run.queued = run.queued || r.queued;
-        closeSheet(s); toast(e.id + " → " + r.gecko.id + " を登録しました" + (r.queued ? "・シール印刷待ちに追加" : ""));
-        continueHatch(e, run);
-      } catch (x) { err.textContent = x.message; err.hidden = false; b.disabled = false; }
+        for (const [i, x] of eggs.entries()) {
+          if (done.has(x.id)) continue;
+          cur = x.id; const r = val("res-" + i);
+          if (r === "hatch") {
+            const h = await hatchEgg({ eggId: x.id, morph: $("#f-m-" + i, s.body).value, het: $("#f-het-" + i, s.body).value, sex: val("sx-" + i) || "不明", hatchDate: date, weight: $("#f-w-" + i, s.body).value });
+            done.set(x.id, h.gecko.id); queued = queued || h.queued;
+          } else if (r === "fail") { await failEgg({ eggId: x.id, reason: val("rs-" + i) || "無精卵", date }); done.set(x.id, ""); }
+        }
+      } catch (x2) { err.textContent = cur + ": " + (x2?.message || x2) + (done.size ? "（それより前の卵は記録済み）" : ""); err.hidden = false; b.disabled = false; return; }
+      const kids = [...done.values()].filter(Boolean), bad = [...done.values()].filter(v => !v).length;
+      closeSheet(s);
+      const parts = [kids.length ? kids.join("・") + " を登録" : "", bad ? "不良" + bad + "個を記録" : ""].filter(Boolean);
+      toast((parts.length ? parts.join("・") + "しました" : "何も記録しませんでした") + (queued ? "（シールは印刷待ちに追加）" : ""));
+      if (kids.length) setTimeout(() => { if (clutch) openClutch(clutch.id); else openGecko(kids[0]); if (!queued) printNow(kids, "sticker").catch(x => toast(x.message)); }, 60);
     });
   } });
 }
@@ -2590,7 +2599,7 @@ $("#chat-in").addEventListener("keydown", e => { if (e.key === "Enter" && (e.met
 document.addEventListener("keydown", e => { if (e.key === "Escape" && sheets.length) closeSheet(sheets[sheets.length - 1]); });
 
 /* ---------- app: budget / backup strip, settings, automatic backup, updates ---------- */
-const APP_VERSION = "2026-10-21-2";
+const APP_VERSION = "2026-10-21-3";
 const fmtGB = b => (b / 1e9).toFixed(b >= 1e10 ? 0 : 1) + "GB";
 const fmtTime = t => t ? new Date(t).toLocaleString("ja-JP", { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" }) : "まだありません";
 function setPill(el, { val, ratio, state }) {
