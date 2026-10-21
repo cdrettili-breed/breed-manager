@@ -852,6 +852,77 @@ async function restoreGecko(id) {
     return g;
   });
 }
+/* pairings, clutches (with their eggs) and single eggs go to the same 24-hour trash. Records something else still
+   depends on are refused with what to delete first (a pairing with layings, a clutch or egg with hatched geckos). */
+const dropRec = async (coll, id) => { await S.db.doc(coll + "/" + id).delete(); S.local.delete(coll + "/" + id); S[coll]?.delete?.(id); };
+const unqueue = ids => queueRemove(ids.flatMap(id => [id, "card:" + id, "cup:" + id]).filter(k => S.queue.has(k))).catch(() => {});
+async function deletePairing(rawId) {
+  needDb();
+  const r = await serial(async () => {
+    const p = await getRec("pairings", rawId); if (!p) throw new Error(normId(rawId) + " は見つかりません");
+    const lays = (await S.db.collection("clutches").where("pairingId", "==", p.id).get()).docs.map(d => d.id);
+    if (lays.length) throw new Error(p.id + " には産卵の記録（" + lays.join("・") + "）があります。先に産卵を削除してください");
+    /* a pairing that this one ended when it was registered goes back to laying */
+    const prev = [...S.pairings.values()].find(x => x.damId === p.damId && x.id !== p.id && !isActivePair(x) && (x.log || []).slice(-1)[0]?.t.includes("新しいペアリング " + p.id));
+    if (prev) await putRec("pairings", prev.id, { status: "産卵中", endDate: "" }, "産卵中に戻す（" + p.id + " を削除）");
+    await S.db.doc("trash/" + p.id).set({ id: p.id, coll: "pairings", doc: p, deletedAt: nowTs(), reopened: prev ? prev.id : "" });
+    await dropRec("pairings", p.id);
+    await logTo("geckos", p.damId, "ペアリング " + p.id + " を削除"); await logTo("geckos", p.sireId, "ペアリング " + p.id + " を削除");
+    return { id: p.id, reopened: prev ? prev.id : "" };
+  });
+  await unqueue([r.id]); schedule(); return r;
+}
+async function deleteClutch(rawId) {
+  needDb();
+  const r = await serial(async () => {
+    const c = await getRec("clutches", rawId); if (!c) throw new Error(normId(rawId) + " は見つかりません");
+    const eggs = await eggsOf(c), kids = [...(c.offspringIds || []), ...eggs.filter(e => e.offspringId).map(e => e.offspringId)];
+    if (kids.length) throw new Error("この産卵から生まれた個体（" + [...new Set(kids)].join("・") + "）がいます。先に個体を削除してください");
+    await S.db.doc("trash/" + c.id).set({ id: c.id, coll: "clutches", doc: c, eggs, deletedAt: nowTs() });
+    for (const e of eggs) await dropRec("eggs", e.id);
+    await dropRec("clutches", c.id);
+    await logTo("geckos", c.damId, "産卵 " + c.id + " を削除");
+    if (c.pairingId) await logTo("pairings", c.pairingId, "産卵 " + c.id + " を削除");
+    return { id: c.id, eggs: eggs.map(e => e.id) };
+  });
+  await unqueue([r.id, ...r.eggs]); schedule(); return r;
+}
+async function deleteEgg(rawId) {
+  needDb();
+  const r = await serial(async () => {
+    const e = await getRec("eggs", rawId); if (!e) throw new Error(normId(rawId) + " は見つかりません");
+    if (e.status === "孵化済") throw new Error(e.id + " から生まれた " + e.offspringId + " がいます。先に個体を削除してください");
+    const c = await getRec("clutches", e.clutchId).catch(() => null);
+    if (c && (c.eggIds || []).filter(x => x !== e.id).length === 0) throw new Error("この産卵の卵はこれだけです。産卵（" + c.id + "）ごと削除してください");
+    await S.db.doc("trash/" + e.id).set({ id: e.id, coll: "eggs", doc: e, deletedAt: nowTs() });
+    await dropRec("eggs", e.id);
+    if (c) await settleClutch(c.id, { eggIds: (c.eggIds || []).filter(x => x !== e.id), eggs: Math.max(0, (c.eggs || 1) - 1), ...(e.status === "不良" ? { failed: Math.max(0, (c.failed || 0) - 1) } : {}) }, "卵 " + e.id + " を削除");
+    return { id: e.id };
+  });
+  await unqueue([r.id]); schedule(); return r;
+}
+async function restoreTrash(id) {
+  const t = (await S.db.doc("trash/" + id).get()).data?.(); if (!t) throw new Error(id + " は見つかりません（完全に削除済みかもしれません）");
+  if (!t.coll || t.coll === "geckos") return restoreGecko(id);
+  needDb();
+  return serial(async () => {
+    if ((await S.db.doc(t.coll + "/" + id).get()).exists) throw new Error(id + " はすでにあります");
+    const back = d => ({ ...d, updatedAt: nowTs(), log: [...(d.log || []), L("削除から復活")] });
+    await S.db.doc(t.coll + "/" + id).set(back(t.doc));
+    if (t.coll === "pairings" && t.reopened) {
+      const prev = await getRec("pairings", t.reopened).catch(() => null);
+      if (prev && isActivePair(prev)) await putRec("pairings", prev.id, { status: "終了", endDate: t.doc.date }, "終了（" + id + " を復活）");
+    }
+    if (t.coll === "clutches") for (const e of t.eggs || []) await S.db.doc("eggs/" + e.id).set(back(e));
+    if (t.coll === "eggs") {
+      const c = await getRec("clutches", t.doc.clutchId).catch(() => null);
+      if (c) await settleClutch(c.id, { eggIds: [...new Set([...(c.eggIds || []), id])], eggs: (c.eggs || 0) + 1, ...(t.doc.status === "不良" ? { failed: (c.failed || 0) + 1 } : {}) }, "卵 " + id + " を復活");
+    }
+    await S.db.doc("trash/" + id).delete();
+    schedule();
+    return t.doc;
+  });
+}
 async function purgeTrash() {
   const now = Date.now();
   for (const t of await listTrash().catch(() => [])) {
@@ -861,17 +932,33 @@ async function purgeTrash() {
   }
 }
 const leftText = t => { const h = Math.max(0, Math.ceil((TRASH_MS - (Date.now() - Date.parse(t.deletedAt))) / 3600e3)); return "あと" + h + "時間で完全に削除"; };
+const TRASH_KIND = { geckos: "個体", pairings: "ペアリング", clutches: "産卵", eggs: "卵" };
+const trashSub = t => t.coll === "pairings" ? "♀" + t.doc.damId + " × ♂" + t.doc.sireId + " · " + (t.doc.date || "")
+  : t.coll === "clutches" ? "♀" + t.doc.damId + " · 産卵 " + (t.doc.layDate || "") + " · 卵" + (t.eggs || []).length + "個"
+  : t.coll === "eggs" ? (t.doc.clutchId || "") + " · " + (t.doc.status || "") : mz(t.doc?.morph) || "";
 function trashSheet() {
-  openSheet({ title: "削除した個体", render: async s => {
+  openSheet({ title: "削除したデータ", render: async s => {
     const draw = async () => {
       const list = await listTrash();
-      s.body.innerHTML = `<p class="note">削除した個体は24時間だけここに残り、復活できます。それを過ぎると写真も含めて完全に消えます。ここにある間は、一覧・検索・チャットには出ません。</p>
-        ${list.length ? `<div class="list">${list.map(t => `<div class="row r3"><span class="rid">${esc(t.id)}</span><span class="rmain"><span class="rmorph">${esc(mz(t.doc?.morph) || "")}</span><span class="rsub">${esc(leftText(t))}</span></span><button class="btn sm" data-restore="${esc(t.id)}">復活</button></div>`).join("")}</div>` : `<div class="empty">削除した個体はありません。</div>`}`;
+      s.body.innerHTML = `<p class="note">削除した個体・ペアリング・産卵・卵は24時間だけここに残り、復活できます。それを過ぎると（個体は写真も含めて）完全に消えます。ここにある間は、一覧・検索・チャットには出ません。</p>
+        ${list.length ? `<div class="list">${list.map(t => `<div class="row r3"><span class="rid">${esc(t.id)}</span><span class="rmain"><span class="rmorph">${esc(TRASH_KIND[t.coll || "geckos"] || "")} · ${esc(trashSub(t))}</span><span class="rsub">${esc(leftText(t))}</span></span><button class="btn sm" data-restore="${esc(t.id)}">復活</button></div>`).join("")}</div>` : `<div class="empty">削除したデータはありません。</div>`}`;
     };
     await draw();
     s.body.onclick = async e => { const b = e.target.closest("[data-restore]"); if (!b) return; b.disabled = true;
-      try { const g = await restoreGecko(b.dataset.restore); toast(g.id + " を復活しました"); await draw(); } catch (x) { toast(x.message); b.disabled = false; } };
+      try { const d = await restoreTrash(b.dataset.restore); toast(d.id + " を復活しました"); await draw(); } catch (x) { toast(x.message); b.disabled = false; } };
   } });
+}
+/* the two-tap delete button on the pairing / clutch / egg screens */
+let armRec = "";
+const delBtn = (id, what) => `<button class="btn block${armRec === id ? " danger" : ""}" data-del="${esc(id)}" style="margin-top:12px">${armRec === id ? "もう一度押すと削除します（24時間は復活できます）" : "この" + what + "を削除（間違えて登録したとき）"}</button>`;
+async function delClick(e, s, draw, fn) {
+  const b = e.target.closest("[data-del]"); if (!b) return false;
+  const id = b.dataset.del;
+  if (armRec !== id) { armRec = id; draw(s); return true; }
+  armRec = "";
+  try { const r = await fn(id); closeSheet(s); toast(r.id + " を削除しました" + (r.reopened ? "（" + r.reopened + " は産卵中に戻しました）" : "") + "。設定の「削除したデータ」から24時間は復活できます"); }
+  catch (x) { toast(x.message); draw(s); }
+  return true;
 }
 function activePairingFor(damId) {
   return [...S.pairings.values()].filter(p => p.damId === damId && isActivePair(p)).sort((a, b) => b.date.localeCompare(a.date))[0] || null;
@@ -2342,7 +2429,7 @@ function openGecko(id) {
       if (q === "delete") {
         if (!armDel) { armDel = g.id; draw(s); return; }
         armDel = "";
-        try { const r = await deleteGecko(g.id); closeSheet(s); toast(r.id + " を削除しました" + (r.eggBack ? "（卵は孵卵中に戻しました）" : "") + "。設定の「削除した個体」から24時間は復活できます"); } catch (x) { toast(x.message); draw(s); }
+        try { const r = await deleteGecko(g.id); closeSheet(s); toast(r.id + " を削除しました" + (r.eggBack ? "（卵は孵卵中に戻しました）" : "") + "。設定の「削除したデータ」から24時間は復活できます"); } catch (x) { toast(x.message); draw(s); }
         return;
       }
       if (q === "edit") editGeckoForm(g); else if (q === "sell") sellForm(g); else if (q === "dead") deathForm(g);
@@ -2386,8 +2473,9 @@ function openPairing(id) {
       ${oddsHTML(predictFor(await getRec("geckos", p.damId).catch(() => null), await getRec("geckos", p.sireId).catch(() => null)))}
       ${qrRow(p.id, "ケージに貼っておけば、読み取るだけでこのペアの産卵を記録できます。")}
       ${cl.length ? `<h3 class="sec-h">産卵 <span class="count">${cl.length}回</span></h3><div class="hist">${cl.map(c => `<div><span>${esc(md(c.layDate))}</span><span>${idBtn(c.id)} 卵${c.eggs}個 ${pill(c.status)}</span></div>`).join("")}</div>` : ""}
-      ${logHTML(p)}`;
-    s.body.onclick = async e => { const b = e.target.closest("[data-q]"); if (!b) return;
+      ${logHTML(p)}
+      ${delBtn(p.id, "ペアリング")}`;
+    s.body.onclick = async e => { if (await delClick(e, s, draw, deletePairing)) return; const b = e.target.closest("[data-q]"); if (!b) return;
       if (b.dataset.q === "lay") return layForm(p.damId);
       try { await endPairing(p.id); toast("産卵終了にしました"); } catch (x) { toast(x.message); } };
   };
@@ -2412,8 +2500,9 @@ function openClutch(id) {
       ${eggs.length ? `<h3 class="sec-h">卵</h3><div class="eggs">${eggs.map(eggChip).join("")}</div>` : ""}
       ${qrRow(c.id, "このQRを卵のケースに貼ります（1つの産卵につき1枚）。読み取ると、卵の数だけ孵化を記録する画面が開きます。")}
       ${(c.offspringIds || []).length ? `<h3 class="sec-h">生まれた子</h3><div class="idgrid">${c.offspringIds.map(idBtn).join("")}</div>` : ""}
-      ${logHTML(c)}`;
-    s.body.onclick = async e => { const b = e.target.closest("[data-q]"); if (!b) return;
+      ${logHTML(c)}
+      ${delBtn(c.id, "産卵（卵もまとめて）")}`;
+    s.body.onclick = async e => { if (await delClick(e, s, draw, deleteClutch)) return; const b = e.target.closest("[data-q]"); if (!b) return;
       if (b.dataset.q === "hatch") return hatchForm(c.id);
       b.disabled = true;
       try { await queueAdd([c.id], "sticker"); toast("QRシールを印刷待ちに追加しました"); } catch (x) { toast(x.message); } finally { b.disabled = false; } };
@@ -2438,8 +2527,9 @@ function openEgg(id) {
       ${e.status === "不良" ? `<dt>不良</dt><dd>${esc(e.hatchDate)} · ${esc(e.failReason)}</dd>` : ""}
       ${e.notes ? `<dt>メモ</dt><dd>${esc(e.notes)}</dd>` : ""}</dl>
       ${qrRow(e.id, "プリンカップに貼っておけば、孵化のときに読み取るだけで親情報が出ます。")}
-      ${logHTML(e)}`;
-    s.body.onclick = ev => { const b = ev.target.closest("[data-q]"); if (!b) return;
+      ${logHTML(e)}
+      ${delBtn(e.id, "卵")}`;
+    s.body.onclick = async ev => { if (await delClick(ev, s, draw, deleteEgg)) return; const b = ev.target.closest("[data-q]"); if (!b) return;
       const q = b.dataset.q;
       if (q === "hatch") hatchForm(e.id);
       else if (q === "fail") failForm(e);
@@ -2962,7 +3052,7 @@ $("#chat-in").addEventListener("keydown", e => { if (e.key === "Enter" && (e.met
 document.addEventListener("keydown", e => { if (e.key === "Escape" && sheets.length) closeSheet(sheets[sheets.length - 1]); });
 
 /* ---------- app: budget / backup strip, settings, automatic backup, updates ---------- */
-const APP_VERSION = "2026-10-21-10";
+const APP_VERSION = "2026-10-21-11";
 const fmtGB = b => (b / 1e9).toFixed(b >= 1e10 ? 0 : 1) + "GB";
 const fmtTime = t => t ? new Date(t).toLocaleString("ja-JP", { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" }) : "まだありません";
 function setPill(el, { val, ratio, state }) {
@@ -3038,9 +3128,9 @@ function settingsSheet(focus) {
           <div class="idrow"><input id="st-gh" type="password" autocomplete="off" placeholder="${st.ghToken ? "変えるときだけ入力" : "github_pat_…"}" aria-label="GitHubの鍵"><button class="btn" data-sx="gh">保存</button></div>
           <p class="note">卸モード・販売モードの「お客様用ページに公開」で使います。鍵はこのiPhoneの中にだけ保存されます。<br>卸: <span class="mono">${esc(BM.catalog.url)}</span><br>販売: <span class="mono">${esc(BM.shop.url)}</span></p></div>
       </section>
-      <section class="setsec" id="sec-trash"><h3>削除した個体</h3>
+      <section class="setsec" id="sec-trash"><h3>削除したデータ</h3>
         <p class="note" style="margin:0">削除してから24時間は、ここから復活できます。</p>
-        <button class="btn" data-sx="trash" style="align-self:flex-start">削除した個体を見る</button>
+        <button class="btn" data-sx="trash" style="align-self:flex-start">削除したデータを見る</button>
       </section>
       <section class="setsec"><h3>データ</h3>
         <div class="botacts" style="margin-top:0"><button class="btn abtn" data-sx="export">データを書き出す</button><button class="btn abtn" data-sx="import">${armedImport ? "もう一度で読み込む" : "データを読み込む"}</button></div>
