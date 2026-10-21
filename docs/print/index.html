@@ -94,8 +94,8 @@ async function lib() {
 lib().catch(() => setStatus("印刷の部品を読み込めませんでした（通信を確認）", "err"));
 
 /* wide: list every nearby device instead of only names that look like NIIMBOT printers */
-async function connect(wide) {
-  let device;
+async function connect(wide, known) {
+  let device = known;
   if (wide) {
     /* the picker has to open within the tap, before anything else is awaited */
     device = await navigator.bluetooth.requestDevice({ acceptAllDevices: true, optionalServices: ["e7810a71-73ae-499d-8c15-faa9aef0c3f2"] });
@@ -136,15 +136,27 @@ async function readJob() {
   return job;
 }
 
-function showThumbs(job) {
+/* labels sent in the link: a 1-bit bitmap per label (dark = 1, row by row), deflated when z = 1, base64url */
+const fromB64url = s => { const b = atob(s.replace(/-/g, "+").replace(/_/g, "/")); const u = new Uint8Array(b.length); for (let i = 0; i < b.length; i++) u[i] = b.charCodeAt(i); return u; };
+async function bitsCanvas(p, w, h) {
+  let bits = fromB64url(p.d);
+  if (p.z) bits = new Uint8Array(await new Response(new Blob([bits]).stream().pipeThrough(new DecompressionStream("deflate-raw"))).arrayBuffer());
+  const c = document.createElement("canvas"); c.width = w; c.height = h;
+  const ctx = c.getContext("2d"), img = ctx.createImageData(w, h), px = img.data;
+  for (let i = 0; i < w * h; i++) { const v = bits[i >> 3] & (0x80 >> (i & 7)) ? 0 : 255, o = i * 4; px[o] = px[o + 1] = px[o + 2] = v; px[o + 3] = 255; }
+  ctx.putImageData(img, 0, 0);
+  return c;
+}
+const pageCanvas = (p, w, h) => p.png ? toCanvas(p.png, w, h) : bitsCanvas(p, w, h);
+async function showThumbs(job) {
   $("#thumbs").innerHTML = "";
-  for (const p of job.pages) { const i = new Image(); i.src = p.png; i.alt = p.id || "ラベル"; $("#thumbs").append(i); }
+  for (const p of job.pages) { const c = await pageCanvas(p, job.px[0], job.px[1]); const i = new Image(); i.src = c.toDataURL("image/png"); i.alt = p.id || "ラベル"; $("#thumbs").append(i); }
 }
 
 async function printJob(job) {
   const n = await lib();
   const [w, h] = job.px, canvases = [];
-  for (const p of job.pages) canvases.push(await toCanvas(p.png, w, h));
+  for (const p of job.pages) canvases.push(await pageCanvas(p, w, h));
   const dir = $("#dir").value, density = Number($("#density").value);
   const task = client.protocol.newPrintTask(client.getPrintTaskType() || "B1", { totalPages: canvases.length, density, statusPollIntervalMs: 100, statusTimeoutMs: 8000 });
   try {
@@ -162,13 +174,12 @@ async function run(getJob) {
   const btns = [$("#print"), $("#test")]; btns.forEach(b => b.disabled = true);
   try {
     if (!connected) {
-      /* the Bluetooth picker needs this tap, so the job is read on the next one */
       await connect();
-      say("つながりました。もう一度ボタンを押すと印刷します");
-      return;
+      /* the clipboard can only be read in a tap of its own; labels from the link or the test print go on right away */
+      if (getJob.needsTap) { say("つながりました。もう一度ボタンを押すと印刷します"); return; }
     }
     const job = await getJob();
-    showThumbs(job);
+    await showThumbs(job);
     say(`${job.pages.length}枚を印刷します…`);
     await printJob(job);
     say(`${job.pages.length}枚の印刷が終わりました。Breed Managerに戻れます`);
@@ -196,8 +207,33 @@ const tapConnect = wide => { if (busy) return; busy = true; connect(wide).catch(
 $("#connect").onclick = () => tapConnect(false);
 $("#connect-all").onclick = () => tapConnect(true);
 $("#disconnect").onclick = () => client?.disconnect();
-$("#print").onclick = () => run(readJob);
+readJob.needsTap = true;
+$("#print").onclick = () => run(linkJob ? async () => linkJob : readJob);
 $("#test").onclick = () => run(async () => testJob());
+
+/* opened from Breed Manager (bluefy://open?url=…/print/#j=…): the labels come with the link.
+   A B1 this page has used before is reconnected without the picker when Bluefy allows it, then it prints on its own. */
+let linkJob = null;
+async function fromLink() {
+  const m = location.hash.match(/^#j=(.+)$/); if (!m) return;
+  try { linkJob = JSON.parse(decodeURIComponent(m[1])); } catch { say("ラベルを読み取れませんでした。Breed Managerでもう一度「印刷」を押してください"); return; }
+  history.replaceState(null, "", location.pathname);
+  await showThumbs(linkJob);
+  $("#print").textContent = `B1とつないで印刷（${linkJob.pages.length}枚）`;
+  say(`${linkJob.pages.length}枚のラベルを受け取りました。`);
+  try {
+    const known = navigator.bluetooth?.getDevices ? await navigator.bluetooth.getDevices() : [];
+    const dev = known.find(d => /^B1/i.test(d.name || "")) || known[0];
+    if (!dev) { say(`${linkJob.pages.length}枚のラベルを受け取りました。上のボタンを押すとB1とつないで印刷します。`); return; }
+    busy = true; say("B1につないでいます…");
+    await connect(false, dev);
+    busy = false;
+    $("#print").textContent = `印刷（${linkJob.pages.length}枚）`;
+    await run(async () => linkJob);
+  } catch { busy = false; say(`${linkJob.pages.length}枚のラベルを受け取りました。上のボタンを押すとB1とつないで印刷します。`); setStatus("未接続"); }
+}
+fromLink();
+window.addEventListener("hashchange", fromLink);
 </script>
 </body>
 </html>
