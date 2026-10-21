@@ -374,7 +374,7 @@ details.more>div{padding:0 12px 12px;display:flex;flex-direction:column;gap:12px
         <div class="chips" id="sugg"></div>
         <div class="attrow" id="att-row"></div>
         <div class="inrow">
-          <button class="scan-in" data-act="scan-chat" aria-label="QRを読み取ってIDを入力"><svg viewBox="0 0 24 24"><path d="M4 8V5a1 1 0 0 1 1-1h3M16 4h3a1 1 0 0 1 1 1v3M20 16v3a1 1 0 0 1-1 1h-3M8 20H5a1 1 0 0 1-1-1v-3M8 9h3v3H8zM13 13h3v3h-3zM13 9h3M8 15h2"/></svg></button>
+          <button class="scan-in" data-act="camera" aria-label="写真を撮って添付"><svg viewBox="0 0 24 24"><path d="M4 8.5A1.5 1.5 0 0 1 5.5 7h2.2l1.4-2h5.8l1.4 2h2.2A1.5 1.5 0 0 1 20 8.5v9a1.5 1.5 0 0 1-1.5 1.5h-13A1.5 1.5 0 0 1 4 17.5z"/><circle cx="12" cy="12.5" r="3.5"/></svg></button>
           <button class="scan-in att" data-act="attach" aria-label="写真やファイルを添付"><svg viewBox="0 0 24 24"><path d="M20 11.5 12.4 19a5 5 0 0 1-7.1-7.1l8-8a3.5 3.5 0 0 1 5 5l-8 8a2 2 0 0 1-2.8-2.8l7.3-7.3"/></svg></button>
           <textarea id="chat-in" rows="1" placeholder="例: 26-0012を販売" aria-label="Claudeへのメッセージ"></textarea>
           <button class="send" id="send" aria-label="送信"><svg viewBox="0 0 24 24"><path d="M5 12h13M13 6l6 6-6 6"/></svg></button>
@@ -397,6 +397,7 @@ details.more>div{padding:0 12px 12px;display:flex;flex-direction:column;gap:12px
 <div id="toast" hidden></div>
 <input type="file" id="scan-file" accept="image/*" capture="environment" hidden>
 <input type="file" id="photo-file" accept="image/*" hidden>
+<input type="file" id="chat-cam" accept="image/*" capture="environment" hidden>
 <input type="file" id="chat-file" accept="image/*,application/pdf,text/plain,text/csv,.csv,.txt,.json,.md" multiple hidden>
 <input type="file" id="photo-cam" accept="image/*" capture="environment" hidden>
 <div id="catalog-page" hidden></div>
@@ -3021,7 +3022,7 @@ function renderChat(pending) {
   if (!turns.length && !pending) {
     const ses = sessions();
     m.innerHTML = `<div class="welcome"><h2>話しかけて管理する</h2>
-      <p>登録・変更・検索を、ふだんの言葉で頼めます。左下のQRボタンでラベルを撮ると、IDが入力されます。</p>
+      <p>登録・変更・検索を、ふだんの言葉で頼めます。左下のカメラで写真を撮るか、クリップで写真やファイルを添付できます。ラベルのQRは右上のボタンで読み取れます。</p>
       ${ses.length ? `<div class="sesh"><div class="sesh-h">これまでの会話</div>${ses.slice(0, showAllSessions ? 10 : 4).map((x, i) => `<button class="sesrow" data-ses="${i}"><span class="sestitle">${esc(x.title)}</span><span class="sesdate">${esc(md(x.at.slice(0, 10)))}</span></button>`).join("")}${ses.length > 4 && !showAllSessions ? `<button class="sesmore" data-act="ses-more">ほかの会話も表示（${ses.length - 4}件）</button>` : ""}</div>` : ""}
       ${!S.hasKey ? `<p class="small">チャットを使うには、上の「予算」から設定を開いてClaudeのAPIキーを入れてください。</p>` : ""}</div>`;
   } else {
@@ -3079,7 +3080,7 @@ const attLabel = a => `[添付${a.n}: ${ATT_KIND[a.kind]} ${a.name}]`;
 function renderAtt() {
   $("#att-row").innerHTML = pendingAtt.map((a, i) => `<span class="att-chip">${a.url ? `<img src="${a.url}" alt="">` : `<span class="ficon">${a.kind === "pdf" ? "PDF" : "TXT"}</span>`}<span class="nm">${esc(a.name)}</span><button data-attdel="${i}" aria-label="${esc(a.name)} を外す">×</button></span>`).join("");
 }
-$("#chat-file").addEventListener("change", async e => {
+for (const sel of ["#chat-file", "#chat-cam"]) $(sel).addEventListener("change", async e => {
   const files = [...(e.target.files || [])]; e.target.value = "";
   for (const f of files.slice(0, 6)) {
     try { const a = await readAttachment(f); pendingAtt.push(a); renderAtt(); } catch (x) { toast(x.message); }
@@ -3162,6 +3163,7 @@ document.addEventListener("click", e => {
   const a = act.dataset.act;
   if (a === "scan") startScan(openRecord);
   else if (a === "attach") { if (!S.hasKey) { toast("チャットを使うには設定でAPIキーを入れてください"); return; } $("#chat-file").click(); }
+  else if (a === "camera") { if (!S.hasKey) { toast("チャットを使うには設定でAPIキーを入れてください"); return; } $("#chat-cam").click(); }
   else if (a === "scan-chat") startScan(id => { const i = $("#chat-in"); i.value = (i.value.trim() ? i.value.trimEnd() + " " : "") + id + " "; autosize(); i.focus(); toast(id + " を入力しました"); });
   else if (a === "queue") queueSheet();
   else if (a === "settings") settingsSheet(act.dataset.sec);
@@ -3182,7 +3184,7 @@ $("#chat-in").addEventListener("keydown", e => { if (e.key === "Enter" && (e.met
 document.addEventListener("keydown", e => { if (e.key === "Escape" && sheets.length) closeSheet(sheets[sheets.length - 1]); });
 
 /* ---------- app: budget / backup strip, settings, automatic backup, updates ---------- */
-const APP_VERSION = "2026-10-22-3";
+const APP_VERSION = "2026-10-22-4";
 const fmtGB = b => (b / 1e9).toFixed(b >= 1e10 ? 0 : 1) + "GB";
 const fmtTime = t => t ? new Date(t).toLocaleString("ja-JP", { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" }) : "まだありません";
 function setPill(el, { val, ratio, state }) {
