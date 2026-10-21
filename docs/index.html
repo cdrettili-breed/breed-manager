@@ -475,6 +475,26 @@ function incubDays(t) {
   }
   return INCUB[INCUB.length - 1][1];
 }
+/* temperature plans: a start temperature, then changes on given days (31.5℃ → 25日目に 28.5℃).
+   An egg develops 1/incubDays(t) of the way per day at t, so the hatch date adds up the share done at each step. */
+const planOf = x => (x && Array.isArray(x.plan) ? x.plan : []).filter(s => s && s.day > 0 && s.t).sort((a, b) => a.day - b.day);
+function planDays(t, plan) {
+  if (!t) return incubDays(t);
+  const st = [{ day: 0, t }, ...planOf({ plan })];
+  let done = 0, day = 0;
+  for (let i = 0; i < st.length; i++) {
+    const rate = 1 / incubDays(st[i].t), end = st[i + 1]?.day;
+    if (end == null || done + (end - day) * rate >= 1) return Math.round(day + (1 - done) / rate);
+    done += (end - day) * rate; day = end;
+  }
+  return Math.round(day);
+}
+const planText = (t, plan) => !t ? "" : [t + "℃", ...planOf({ plan }).map(s => s.day + "日目→" + s.t + "℃")].join(" ");
+const shortPlan = (t, plan) => !t ? "" : planOf({ plan }).length ? [t, ...planOf({ plan }).map(s => s.t)].join("→") + "℃" : t + "℃";
+/* the temperature an egg should be at on a date, and its next change */
+const tempNow = (e, date = today()) => { const d = daysBetween(e.layDate, date); let t = e.temp; for (const s of planOf(e)) if (d >= s.day) t = s.t; return t; };
+const nextChange = (e, date = today()) => { const d = daysBetween(e.layDate, date), s = planOf(e).find(x => x.day >= d); return s ? { ...s, date: addDays(e.layDate, s.day), left: s.day - d } : null; };
+const changeText = (e, date = today()) => { const n = nextChange(e, date); return !n ? "" : n.left === 0 ? "今日 " + n.t + "℃に変更" : "あと" + n.left + "日で" + n.t + "℃に変更（" + md(n.date) + "）"; };
 function sexTrend(t) {
   if (!t) return "";
   if (t <= 28) return "♀寄り"; if (t < 31) return "♂♀混合"; if (t < 33) return "♂寄り"; return "♀寄り(高温)";
@@ -699,7 +719,14 @@ const CACHE = { geckos: () => S.geckos, pairings: () => S.pairings, clutches: ()
 const needDb = () => { if (!S.db) throw new Error("台帳のデータを開けませんでした。アプリを開き直してください。"); };
 const L = t => ({ at: nowTs(), t });
 const customTemp = () => S.settings.customTemp != null && S.settings.customTemp !== "" ? String(S.settings.customTemp) : "";
-const tempOptions = () => [...BASE_TEMPS, ...(customTemp() && !BASE_TEMPS.includes(customTemp()) ? [customTemp()] : [])];
+/* each user sets their own incubation temperatures and temperature plans in settings (meta/settings) */
+const tempOptions = () => Array.isArray(S.settings.incubTemps) && S.settings.incubTemps.length ? S.settings.incubTemps.map(String)
+  : [...BASE_TEMPS, ...(customTemp() && !BASE_TEMPS.includes(customTemp()) ? [customTemp()] : [])];
+const tempPlans = () => (Array.isArray(S.settings.tempPlans) ? S.settings.tempPlans : []).filter(p => p && p.t);
+/* the choices when laying / editing an egg: plain temperatures and plans ("p:<id>") */
+const tempChoices = () => [...tempOptions().map(t => [t, t + "℃"]), ...tempPlans().map(p => ["p:" + p.id, shortPlan(p.t, p.plan) + "（" + planOf(p).map(s => s.day + "日目").join("・") + "）"])];
+const resolveTemp = v => { const p = String(v || "").startsWith("p:") ? tempPlans().find(x => "p:" + x.id === v) : null; return p ? { temp: p.t, plan: planOf(p) } : { temp: v, plan: [] }; };
+const choiceOf = x => { const pl = planOf(x); if (!pl.length) return x.temp != null ? String(x.temp) : ""; const p = tempPlans().find(q => String(q.t) === String(x.temp) && JSON.stringify(planOf(q)) === JSON.stringify(pl)); return p ? "p:" + p.id : String(x.temp); };
 const DEFAULT_SUGG = ["産卵が近いメス", "孵化が近い卵", "販売中の在庫", "今月の販売数", "評価Aの個体"];
 const suggestions = () => (S.settings.suggestions && S.settings.suggestions.length) ? S.settings.suggestions : DEFAULT_SUGG;
 
@@ -993,17 +1020,17 @@ async function endPairing(rawId) {
   });
 }
 async function recordLaying(input) { const r = await _recordLaying(input); r.queued = await maybeQueue([r.clutch.id]); return r; }
-async function _recordLaying({ damId, layDate, eggs, temp, notes }) {
+async function _recordLaying({ damId, layDate, eggs, temp, plan, notes }) {
   needDb();
   return serial(async () => {
     const dam = await getRec("geckos", damId); if (!dam) throw new Error("メス " + normId(damId) + " が見つかりません");
     const pr = activePairingFor(dam.id);
     const d = toDate(layDate) || today(), t = toNum(temp), n = Math.max(1, Math.min(4, toNum(eggs) || 2));
-    const exp = addDays(d, incubDays(t));
+    const pl = planOf({ plan }), exp = addDays(d, planDays(t, pl));
     const cid = await allocId("C" + yy(d), k => "C" + yy(d) + "-" + pad(k, 3), "clutches");
     const eggIds = [];
     for (let i = 0; i < n; i++) eggIds.push(await allocId("E" + yy(d), k => "E" + yy(d) + "-" + pad(k, 4), "eggs"));
-    const base = { damId: dam.id, sireId: pr ? pr.sireId : "", pairingId: pr ? pr.id : "", layDate: d, temp: t, expectedHatch: exp };
+    const base = { damId: dam.id, sireId: pr ? pr.sireId : "", pairingId: pr ? pr.id : "", layDate: d, temp: t, plan: pl, expectedHatch: exp };
     const clutch = await newRec("clutches", { id: cid, ...base, eggs: n, eggIds, hatched: 0, failed: 0, offspringIds: [], hatchDate: "", status: "孵卵中", notes: String(notes || ""), createdAt: nowTs(), updatedAt: nowTs(), log: [L(`産卵 ${n}個（${eggIds.join("・")}）`)] });
     const eggDocs = [];
     for (const eid of eggIds) eggDocs.push(await newRec("eggs", { id: eid, clutchId: cid, ...base, status: "孵卵中", offspringId: "", hatchDate: "", failReason: "", notes: "", createdAt: nowTs(), updatedAt: nowTs(), log: [L(`産卵（${cid}）`)] }));
@@ -1019,7 +1046,7 @@ async function issueEggsForClutch(cidRaw) {
     if ((c.eggIds || []).length) return c;
     const left = Math.max(0, (c.eggs || 0) - (c.hatched || 0) - (c.failed || 0)), eggIds = [];
     for (let i = 0; i < left; i++) eggIds.push(await allocId("E" + yy(c.layDate), k => "E" + yy(c.layDate) + "-" + pad(k, 4), "eggs"));
-    for (const eid of eggIds) await newRec("eggs", { id: eid, clutchId: c.id, damId: c.damId, sireId: c.sireId, pairingId: c.pairingId || "", layDate: c.layDate, temp: c.temp ?? null, expectedHatch: c.expectedHatch, status: "孵卵中", offspringId: "", hatchDate: "", failReason: "", notes: "", createdAt: nowTs(), updatedAt: nowTs(), log: [L(`卵IDを発行（${c.id}）`)] });
+    for (const eid of eggIds) await newRec("eggs", { id: eid, clutchId: c.id, damId: c.damId, sireId: c.sireId, pairingId: c.pairingId || "", layDate: c.layDate, temp: c.temp ?? null, plan: planOf(c), expectedHatch: c.expectedHatch, status: "孵卵中", offspringId: "", hatchDate: "", failReason: "", notes: "", createdAt: nowTs(), updatedAt: nowTs(), log: [L(`卵IDを発行（${c.id}）`)] });
     return putRec("clutches", c.id, { eggIds }, "卵IDを発行 " + eggIds.join("・"));
   });
 }
@@ -1058,15 +1085,23 @@ async function failEgg({ eggId, reason, date }) {
     return { egg: e.id, status: "不良", reason: r };
   });
 }
-async function updateEgg(eggId, { temp, notes }) {
+/* a temperature or plan change applies to every egg of the clutch still incubating (they share the incubator) */
+async function updateEgg(eggId, { temp, plan, notes }) {
   needDb();
   return serial(async () => {
     const e = await getRec("eggs", eggId); if (!e) throw new Error("卵が見つかりません");
-    const p = {}; const parts = [];
-    if (temp !== undefined && toNum(temp) !== e.temp) { p.temp = toNum(temp); p.expectedHatch = addDays(e.layDate, incubDays(p.temp)); parts.push("温度 " + (p.temp ?? "—") + "℃"); }
-    if (notes !== undefined && notes !== e.notes) { p.notes = String(notes); parts.push("メモを変更"); }
-    if (!parts.length) return e;
-    return putRec("eggs", e.id, p, parts.join(" / "));
+    if (temp !== undefined) {
+      const t = toNum(temp), pl = planOf({ plan });
+      if (t !== e.temp || JSON.stringify(pl) !== JSON.stringify(planOf(e))) {
+        const exp = addDays(e.layDate, planDays(t, pl)), text = "温度 " + (planText(t, pl) || "—");
+        const c = e.clutchId ? await getRec("clutches", e.clutchId).catch(() => null) : null;
+        const eggs = c ? (await eggsOf(c)).filter(x => x.status === "孵卵中") : [e];
+        for (const x of eggs) await putRec("eggs", x.id, { temp: t, plan: pl, expectedHatch: exp }, text);
+        if (c) await putRec("clutches", c.id, { temp: t, plan: pl, expectedHatch: exp }, text);
+      }
+    }
+    if (notes !== undefined && notes !== e.notes) await putRec("eggs", e.id, { notes: String(notes) }, "メモを変更");
+    return getRec("eggs", e.id);
   });
 }
 /* photos (breeding geckos): resized in the page, stored as artifact assets, ids kept on the gecko */
@@ -1287,7 +1322,7 @@ function breedingOverview() {
     layingInterval: LAY_INTERVAL,
     layingFemales: layingFemales().map(x => ({ damId: x.damId, sireId: x.sireId, pairingId: x.pairing.id, pairedOn: x.pairing.date, lastLay: x.last || null, nextLayEstimate: x.next, daysUntil: x.daysLeft, layCount: x.count })),
     incubatingEggs: [...S.eggs.values()].filter(e => e.status === "孵卵中").sort((a, b) => a.expectedHatch.localeCompare(b.expectedHatch))
-      .map(e => ({ id: e.id, clutchId: e.clutchId, damId: e.damId, sireId: e.sireId, layDate: e.layDate, temp: e.temp, expectedHatch: e.expectedHatch, daysLeft: daysBetween(t, e.expectedHatch) })).slice(0, 120),
+      .map(e => ({ id: e.id, clutchId: e.clutchId, damId: e.damId, sireId: e.sireId, layDate: e.layDate, temp: e.temp, tempPlan: planText(e.temp, e.plan) || undefined, tempNow: tempNow(e), nextTempChange: nextChange(e) || undefined, expectedHatch: e.expectedHatch, daysLeft: daysBetween(t, e.expectedHatch) })).slice(0, 120),
   };
 }
 const SALE_OPEN = ["育成中", "販売中", "予約済"];
@@ -1621,9 +1656,9 @@ const geckoSpec = g => {
   return { id: g.id, tag: g.sex === "♂" || g.sex === "♀" ? g.sex : "", rows: [{ t: mz(g.morph) || "モルフ未入力", b: true, wrap: par.length || het ? 1 : 2 }, het, { t: [dot(g.birthDate), cb].filter(Boolean).join("  ") }, ...par].filter(Boolean) };
 };
 const geckoSpecs = async list => { await loadParents(list); return list.map(geckoSpec); };
-const eggSpec = e => ({ id: e.id, tag: "卵", rows: [{ t: `♀${e.damId} × ♂${e.sireId || "?"}`, b: true }, { t: `産卵 ${sdot(e.layDate)}${e.temp ? "  " + e.temp + "℃" : ""}` }, { t: `予定 ${sdot(e.expectedHatch)}` }] });
+const eggSpec = e => ({ id: e.id, tag: "卵", rows: [{ t: `♀${e.damId} × ♂${e.sireId || "?"}`, b: true }, { t: `産卵 ${sdot(e.layDate)}${e.temp ? "  " + shortPlan(e.temp, e.plan) : ""}` }, { t: `予定 ${sdot(e.expectedHatch)}` }] });
 /* one label per clutch: its QR opens the hatch screen with a card for every egg in it */
-const clutchSpec = c => ({ id: c.id, tag: "卵" + (c.eggs || (c.eggIds || []).length) + "個", rows: [{ t: `♀${c.damId} × ♂${c.sireId || "?"}`, b: true }, { t: `産卵 ${sdot(c.layDate)}${c.temp ? "  " + c.temp + "℃" : ""}` }, { t: `予定 ${sdot(c.expectedHatch)}` }] });
+const clutchSpec = c => ({ id: c.id, tag: "卵" + (c.eggs || (c.eggIds || []).length) + "個", rows: [{ t: `♀${c.damId} × ♂${c.sireId || "?"}`, b: true }, { t: `産卵 ${sdot(c.layDate)}${c.temp ? "  " + shortPlan(c.temp, c.plan) : ""}` }, { t: `予定 ${sdot(c.expectedHatch)}` }] });
 const pairSpec = p => ({ id: p.id, head: "♂" + p.sireId, tag: "", rows: [{ t: mz(morphOf(p.sireId)) || "", b: true, wrap: 2 }], foot: "交配 " + dot(p.date) });
 function drawTag(ctx, sp, x, y, w, h) {
   ctx.save();
@@ -2015,18 +2050,18 @@ async function layForm(damId) {
   const dam = await getRec("geckos", damId).catch(() => null);
   if (!dam) { toast(normId(damId) + " が見つかりません"); return; }
   if (dam.sex === "♂") { toast(dam.id + " はオスです"); return; }
-  const pr = activePairingFor(dam.id), opts = tempOptions();
+  const pr = activePairingFor(dam.id), opts = tempChoices().map(o => o[0]);
   const lastT = lsGet("leopa.temp", "28.5");
   openForm({
     title: "産卵を記録", submit: "記録してQRを発行",
     intro: `<div class="infobox">${sxHTML(dam.sex)} <b class="mono">${esc(dam.id)}</b> ${esc(mz(dam.morph) || "")}<br>${pr ? `ペア ${idBtn(pr.id)} × ♂${idBtn(pr.sireId)} ${esc(mz(S.geckos.get(pr.sireId)?.morph) || "")}` : `<span style="color:var(--warn)">産卵中のペアリングがありません。父は不明で記録されます。</span>`}</div>`,
     fields: [{ k: "layDate", label: "産卵日", type: "date" }, { k: "eggs", label: "卵の数", type: "seg", options: ["1", "2", "3"], def: "2" },
-      { k: "temp", label: "孵卵温度（℃）", type: "seg", options: opts.map(t => [t, t + "℃"]), def: opts.includes(lastT) ? lastT : opts[0], hint: "孵化予定日はこの温度から計算します。3つ目の温度はチャットで設定できます" },
+      { k: "temp", label: "孵卵温度・温度変化", type: "seg", options: tempChoices(), def: opts.includes(lastT) ? lastT : opts[0], hint: "孵化予定日は温度変化も含めて計算します。温度と温度変化は設定の「孵卵温度」で変えられます" },
       { k: "notes", label: "メモ", type: "textarea", adv: true }],
     values: { layDate: today() }, moreLabel: "メモ",
     onSubmit: async v => {
       lsSet("leopa.temp", v.temp);
-      const r = await recordLaying({ damId: dam.id, ...v });
+      const r = await recordLaying({ damId: dam.id, ...v, ...resolveTemp(v.temp) });
       if (!r.queued) setTimeout(() => printNow([r.clutch.id], "sticker").catch(x => toast(x.message)), 60);
       return r.clutch.id + "（卵" + r.eggs.length + "個）を記録" + (r.queued ? "・シール印刷待ちに追加" : "しました");
     },
@@ -2493,7 +2528,7 @@ function openClutch(id) {
       <dl class="kv"><dt>母 × 父</dt><dd>${idBtn(c.damId)} × ${idBtn(c.sireId)}</dd>
       ${c.pairingId ? `<dt>ペアリング</dt><dd>${idBtn(c.pairingId)}</dd>` : ""}
       <dt>産卵日</dt><dd class="num">${esc(c.layDate)}</dd>
-      <dt>温度</dt><dd class="num">${c.temp ? esc(c.temp) + "℃" : "未入力"}</dd>
+      <dt>温度</dt><dd class="num">${c.temp ? esc(planText(c.temp, c.plan)) + (c.status === "孵卵中" && planOf(c).length ? `<br><span class="muted small">今 ${esc(tempNow(c))}℃${changeText(c) ? " · " + esc(changeText(c)) : ""}</span>` : "") : "未入力"}</dd>
       <dt>孵化予定</dt><dd class="num">${esc(c.expectedHatch)}</dd>
       <dt>卵</dt><dd class="num">${c.eggs}個 · 孵化 ${c.hatched || 0} · 不良 ${c.failed || 0}</dd></dl>
       ${c.status === "孵卵中" ? `<div class="quick"><button class="btn primary" data-q="hatch">孵化を記録（卵${eggs.filter(x => x.status === "孵卵中").length || c.eggs}個）</button><button class="btn" data-q="labels">QRシールを印刷待ちへ</button></div>` : ""}
@@ -2521,7 +2556,7 @@ function openEgg(id) {
       <dt>母</dt><dd>${idBtn(e.damId)} <span class="muted small">${esc(mz(S.geckos.get(e.damId)?.morph) || "")}</span></dd>
       <dt>産卵</dt><dd>${idBtn(e.clutchId)} ${e.pairingId ? "· " + idBtn(e.pairingId) : ""}</dd>
       <dt>産卵日</dt><dd class="num">${esc(e.layDate)} <span class="muted small">${daysBetween(e.layDate, e.hatchDate || today())}日目</span></dd>
-      <dt>温度</dt><dd class="num">${e.temp ? esc(e.temp) + "℃ <span class='muted small'>性別の目安: " + esc(sexTrend(e.temp)) + "</span>" : "未入力（55日で計算）"}</dd>
+      <dt>温度</dt><dd class="num">${e.temp ? esc(planText(e.temp, e.plan)) + ` <span class='muted small'>性別の目安: ${esc(sexTrend(e.temp))}</span>` + (inc && planOf(e).length ? `<br><span class="muted small">今 ${esc(tempNow(e))}℃${changeText(e) ? " · " + esc(changeText(e)) : ""}</span>` : "") : "未入力（55日で計算）"}</dd>
       <dt>孵化予定</dt><dd class="num">${esc(e.expectedHatch)}</dd>
       ${e.status === "孵化済" ? `<dt>孵化</dt><dd>${esc(e.hatchDate)} → ${idBtn(e.offspringId)}</dd>` : ""}
       ${e.status === "不良" ? `<dt>不良</dt><dd>${esc(e.hatchDate)} · ${esc(e.failReason)}</dd>` : ""}
@@ -2533,7 +2568,7 @@ function openEgg(id) {
       const q = b.dataset.q;
       if (q === "hatch") hatchForm(e.id);
       else if (q === "fail") failForm(e);
-      else if (q === "edit") openForm({ title: e.id + " を編集", fields: [{ k: "temp", label: "孵卵温度（℃）", type: "seg", options: tempOptions().map(t => [t, t + "℃"]), hint: "変えると孵化予定日を計算し直します" }, { k: "notes", label: "メモ", type: "textarea" }], values: { temp: e.temp != null ? String(e.temp) : "", notes: e.notes || "" }, onSubmit: async v => { await updateEgg(e.id, v); return "保存しました"; } });
+      else if (q === "edit") openForm({ title: e.id + " の温度・メモ", fields: [{ k: "temp", label: "孵卵温度・温度変化", type: "seg", options: tempChoices().concat(planOf(e).length && !tempChoices().some(o => o[0] === choiceOf(e)) ? [[choiceOf(e), shortPlan(e.temp, e.plan) + "（今の設定）"]] : []), hint: "変えると、同じ産卵の卵すべての孵化予定日を計算し直します" }, { k: "notes", label: "メモ", type: "textarea" }], values: { temp: choiceOf(e), notes: e.notes || "" }, onSubmit: async v => { const r = v.temp === choiceOf(e) ? { temp: e.temp, plan: planOf(e) } : resolveTemp(v.temp); await updateEgg(e.id, { ...r, notes: v.notes }); return "保存しました"; } });
     };
   };
   openSheet({ title: "卵 " + id, render: draw, refresh: draw });
@@ -2585,7 +2620,8 @@ function renderBreed() {
     const e0 = g.e0, total = daysBetween(e0.layDate, g.exp) || 1, el = daysBetween(e0.layDate, t), left = daysBetween(t, g.exp);
     return `<div class="card"><button class="card-top" data-open="${esc(g.cid)}"><b>${esc(g.cid)}</b><span class="days ${dueCls(left)}">${left < 0 ? -left + "日超過" : left === 0 ? "今日予定" : "あと" + left + "日"}</span></button>
       <div class="bar" aria-hidden="true"><i style="width:${Math.min(100, Math.max(3, el / total * 100)).toFixed(0)}%"></i></div>
-      <div class="meta">♀${esc(e0.damId)} × ♂${esc(e0.sireId || "?")} · 産卵 ${md(e0.layDate)} · ${e0.temp ? esc(e0.temp) + "℃ " + esc(sexTrend(e0.temp)) : "温度未入力"} · 予定 ${md(g.exp)}</div>
+      <div class="meta">♀${esc(e0.damId)} × ♂${esc(e0.sireId || "?")} · 産卵 ${md(e0.layDate)} · ${e0.temp ? esc(shortPlan(e0.temp, e0.plan)) + " " + esc(sexTrend(e0.temp)) : "温度未入力"} · 予定 ${md(g.exp)}</div>
+${changeText(e0) ? `<div class="meta" style="margin-top:4px;${(nextChange(e0)?.left ?? 9) <= 1 ? "color:var(--warn);font-weight:700" : ""}">温度: ${esc(changeText(e0))}</div>` : ""}
       ${g.legacy ? `<div class="meta" style="color:var(--warn);margin-top:6px">卵IDが未発行です。タップして発行できます。</div>` : `<div class="eggs">${g.eggs.map(eggChip).join("")}</div>`}</div>`;
   };
   v.innerHTML = `
@@ -2804,7 +2840,7 @@ function rulesText() {
 - 販売価格（price）はパッキングモードで入れる値で、名刺に印刷される。実際に売れたら sell_gecko で価格・販売日・小売り/業販・メモを記録する。購入個体は purchasePrice。
 - 評価は A〜E（grade）。
 - 繁殖の流れ: ペアリング（メスとオスを紐づけ。同居はさせない）→ メスは「産卵中」になり約${LAY_INTERVAL}日おきに産卵 → 産卵を記録すると卵ごとにIDが付く → 孵化は卵IDで記録し、子に新しいIDが付いて親情報が引き継がれる。
-- 孵卵温度の選択肢は ${tempOptions().join("℃・")}℃。3つ目の温度は set_custom_temp で変更できる。
+- 孵卵温度の選択肢は ${tempOptions().join("℃・")}℃、温度変化プランは ${tempPlans().map(p => planText(p.t, p.plan)).join("、") || "なし"}（どちらも設定の「孵卵温度」で利用者が変える）。孵化予定日は温度変化を含めて計算済み。
 - 孵化のモルフはユーザーが言わなければ suggest_morphs で候補と確率を見せて確認する。
 - ライン名はベースモルフに裏で紐づけて覚えている（set_line_morph で登録・変更・英語名）。同じライン同士の子はライン名、ライン×他の子はベースモルフ名で候補に出る。het は個体の het 欄に入れる（モルフ名には入れない）。ブリーダーは breeder（自家繁殖以外）。登録済み: ${S.lines.map(l => l.name + "=" + l.base + (l.en ? "（" + l.en + "）" : "")).join("、") || "なし"}。
 - チャットの候補ボタンは set_chat_suggestions で登録できる。
@@ -3052,7 +3088,7 @@ $("#chat-in").addEventListener("keydown", e => { if (e.key === "Enter" && (e.met
 document.addEventListener("keydown", e => { if (e.key === "Escape" && sheets.length) closeSheet(sheets[sheets.length - 1]); });
 
 /* ---------- app: budget / backup strip, settings, automatic backup, updates ---------- */
-const APP_VERSION = "2026-10-21-11";
+const APP_VERSION = "2026-10-21-12";
 const fmtGB = b => (b / 1e9).toFixed(b >= 1e10 ? 0 : 1) + "GB";
 const fmtTime = t => t ? new Date(t).toLocaleString("ja-JP", { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" }) : "まだありません";
 function setPill(el, { val, ratio, state }) {
@@ -3081,6 +3117,30 @@ async function maybeAutoBackup() {
     if (await BM.backup.isDue()) { await runBackup(false); toast("前回までの台帳をDropboxにバックアップしました"); }
     else { const k = await BM.backup.state(); if (k.linked && (!k.usage || Date.now() - k.usage.at > 864e5)) await BM.backup.refreshUsage(); }
   } catch (e) { console.warn("auto backup", e); }
+}
+/* a temperature plan: start temperature, a change on day N, and optionally a second change */
+function tempPlanForm() {
+  const opts = tempOptions().map(t => [t, t + "℃"]);
+  openForm({ title: "温度変化を追加", submit: "保存",
+    fields: [{ k: "t", label: "最初の温度", type: "seg", options: opts, def: opts[opts.length - 1]?.[0] },
+      { k: "d1", label: "温度を変える日（産卵から何日目）", type: "number", ph: "例 25", chips: ["14", "21", "25", "30", "35"] },
+      { k: "t1", label: "変えたあとの温度", type: "seg", options: opts, def: opts[0]?.[0] },
+      { k: "d2", label: "もう一度変える日（任意）", type: "number", ph: "例 40", adv: true },
+      { k: "t2", label: "2回目に変えたあとの温度", type: "seg", options: [["", "なし"], ...opts], def: "", adv: true }],
+    moreLabel: "2回目の温度変化（必要なときだけ）",
+    onSubmit: async v => {
+      const t = toNum(v.t), d1 = Math.round(toNum(v.d1) || 0), t1 = toNum(v.t1), d2 = Math.round(toNum(v.d2) || 0), t2 = toNum(v.t2);
+      if (!t || !t1) throw new Error("温度を選んでください");
+      if (d1 < 1 || d1 > 80) throw new Error("温度を変える日を1〜80の数字で入れてください");
+      if (t1 === t) throw new Error("変えたあとの温度が最初と同じです");
+      const plan = [{ day: d1, t: t1 }];
+      if (d2 || t2) { if (!(d2 > d1) || !t2) throw new Error("2回目は、1回目より後の日と温度を入れてください"); plan.push({ day: d2, t: t2 }); }
+      const p = { id: "tp" + Date.now().toString(36), t, plan };
+      if (tempPlans().some(x => x.t === t && JSON.stringify(planOf(x)) === JSON.stringify(plan))) throw new Error("同じ温度変化がすでにあります");
+      const next = [...tempPlans(), p];
+      await saveMeta("settings", { tempPlans: next }); S.settings.tempPlans = next; schedule();
+      return planText(t, plan) + "（孵化まで約" + planDays(t, plan) + "日）を保存しました";
+    } });
 }
 function settingsSheet(focus) {
   let armedRestore = "", armedImport = false, pendingImport = null, linkUrl = "";
@@ -3145,6 +3205,15 @@ function settingsSheet(focus) {
       <section class="setsec"><h3>写真の読み取り</h3>
         <label class="toggle"><input type="checkbox" id="st-photoscan" ${lsGet("leopa.photoScan", false) ? "checked" : ""}>カメラ映像ではなく、写真を撮って読み取る</label>
       </section>
+      <section class="setsec" id="sec-temps"><h3>孵卵温度</h3>
+        <div class="field"><label>温度の選択肢（産卵の記録で選びます）</label>
+          <div class="chips wrap">${tempOptions().map(t => `<button class="chip" data-sx="trm" data-t="${esc(t)}" aria-label="${esc(t)}℃を外す">${esc(t)}℃ ×</button>`).join("")}</div>
+          <div class="idrow"><input id="st-temp" inputmode="decimal" placeholder="例 30" autocomplete="off" aria-label="追加する温度"><button class="btn" data-sx="tadd">追加</button></div></div>
+        <div class="field"><label>温度変化（途中で温度を変えるパターン）</label>
+          ${tempPlans().length ? `<div class="list">${tempPlans().map(p => `<div class="row r3"><span class="rid">${esc(shortPlan(p.t, p.plan))}</span><span class="rmain"><span class="rsub" style="white-space:normal">${esc(planText(p.t, p.plan))} · 孵化まで約${planDays(toNum(p.t), planOf(p))}日</span></span><button class="btn sm" data-sx="pdel" data-id="${esc(p.id)}">削除</button></div>`).join("")}</div>` : `<p class="note" style="margin:0">まだありません。</p>`}
+          <button class="btn" data-sx="padd" style="align-self:flex-start;margin-top:6px">＋ 温度変化を追加</button>
+          <p class="note" style="margin:0">例: 31.5℃で始めて25日目に28.5℃。孵化予定日は温度変化も含めて計算します。登録した温度変化は、産卵の記録と卵の「温度・メモ」で選べます。</p></div>
+      </section>
       <section class="setsec" id="sec-printer"><h3>ラベルプリンター</h3>
         <label class="toggle"><input type="checkbox" id="st-b1" ${lsGet("leopa.b1", false) ? "checked" : ""}>ラベルとカップラベルをNIIMBOT B1で印刷する（Bluefy経由）</label>
         <p class="note" style="margin:0">「印刷」を押すと、Bluefyで印刷ページが自動で開き、ラベルが渡されます。B1とつながっていればそのまま印刷され、初回やつながっていないときは「B1とつないで印刷」を1回押します。名刺はこれまでどおりPDFです。</p>
@@ -3193,6 +3262,15 @@ function settingsSheet(focus) {
         else if (a === "morphs") { morphSheet(); return; }
         else if (a === "lang-ja" || a === "lang-en") { const v = a.slice(5); await saveMeta("settings", { morphLang: v }); S.settings.morphLang = v; schedule(); toast(v === "en" ? "モルフ名を英語で表示します" : "モルフ名を日本語で表示します"); }
         else if (a === "trash") { trashSheet(); return; }
+        else if (a === "tadd" || a === "trm") {
+          const cur = tempOptions();
+          let next;
+          if (a === "tadd") { const v = toNum($("#st-temp", s.body).value); if (v == null || v < 20 || v > 36) { toast("温度は20〜36℃の数字で入れてください"); return; } next = [...new Set([...cur, String(v)])].sort((x, y) => x - y); }
+          else { if (cur.length <= 1) { toast("温度は1つ以上残してください"); return; } next = cur.filter(t => t !== b.dataset.t); }
+          await saveMeta("settings", { incubTemps: next }); S.settings.incubTemps = next; toast("温度の選択肢を保存しました");
+        }
+        else if (a === "pdel") { const next = tempPlans().filter(p => p.id !== b.dataset.id); await saveMeta("settings", { tempPlans: next }); S.settings.tempPlans = next; toast("温度変化を削除しました"); }
+        else if (a === "padd") { tempPlanForm(); return; }
         else if (a === "own") { const v = $("#st-own", s.body).value.trim(); await saveMeta("settings", { ownBreeder: v }); S.settings.ownBreeder = v; toast(v ? "「" + v + " CB」と印刷します" : "自家繁殖のCBは印刷しません"); }
         else if (a === "b1url") { await navigator.clipboard.writeText(B1_URL); toast("アドレスをコピーしました。Bluefyに貼り付けて開いてください"); return; }
         else if (a === "unlink") { await BM.backup.unlink(); toast("Dropboxとのつなぎを外しました"); }
