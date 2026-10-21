@@ -1,0 +1,184 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="robots" content="noindex">
+<title>B1で印刷</title>
+<style>
+:root { --bg:#f4f9fd; --card:#fff; --ink:#16324a; --sub:#5b7387; --line:#d6e6f2; --pri:#2f8fd8; --pri-ink:#fff; --soft:#e6f2fb; --ok:#1f8a5b; --warn:#b26a00; --err:#c0392b; }
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) { --bg:#0f1b26; --card:#172735; --ink:#e4eef6; --sub:#9bb1c3; --line:#2a3f52; --pri:#4aa3e8; --pri-ink:#0b1620; --soft:#1d3346; --ok:#4cc38a; --warn:#e0a030; --err:#ef6b5b; } }
+:root[data-theme="dark"] { --bg:#0f1b26; --card:#172735; --ink:#e4eef6; --sub:#9bb1c3; --line:#2a3f52; --pri:#4aa3e8; --pri-ink:#0b1620; --soft:#1d3346; --ok:#4cc38a; --warn:#e0a030; --err:#ef6b5b; }
+* { box-sizing:border-box; }
+html, body { margin:0; background:var(--bg); color:var(--ink); font:16px/1.55 -apple-system, "Hiragino Sans", "Noto Sans JP", sans-serif; }
+main { max-width:520px; margin:0 auto; padding:16px 16px calc(32px + env(safe-area-inset-bottom)); display:flex; flex-direction:column; gap:14px; }
+h1 { font-size:20px; margin:4px 0 0; }
+.card { background:var(--card); border:1px solid var(--line); border-radius:14px; padding:14px; display:flex; flex-direction:column; gap:10px; }
+.row { display:flex; gap:8px; align-items:center; flex-wrap:wrap; }
+.btn { appearance:none; border:1px solid var(--line); background:var(--soft); color:var(--ink); border-radius:12px; padding:12px 14px; font:inherit; font-weight:600; cursor:pointer; }
+.btn.pri { background:var(--pri); border-color:var(--pri); color:var(--pri-ink); }
+.btn.big { width:100%; padding:16px; font-size:18px; }
+.btn:disabled { opacity:.5; }
+.status { font-weight:700; }
+.status.ok { color:var(--ok); } .status.err { color:var(--err); } .status.warn { color:var(--warn); }
+.note { color:var(--sub); font-size:14px; margin:0; }
+.thumbs { display:flex; gap:8px; flex-wrap:wrap; }
+.thumbs img { background:#fff; border:1px solid var(--line); border-radius:4px; height:64px; image-rendering:pixelated; }
+select, textarea { font:inherit; color:var(--ink); background:var(--card); border:1px solid var(--line); border-radius:10px; padding:8px; }
+textarea { width:100%; min-height:70px; font-size:13px; }
+label { font-size:14px; color:var(--sub); display:flex; align-items:center; gap:6px; }
+details summary { cursor:pointer; color:var(--sub); font-size:14px; }
+.warnbox { background:var(--soft); border-radius:10px; padding:10px 12px; font-size:14px; }
+</style>
+</head>
+<body>
+<main>
+  <h1>NIIMBOT B1で印刷</h1>
+  <div class="warnbox" id="nobt" hidden>このページは <b>Bluefy</b>（Bluetooth対応ブラウザ）で開いてください。Safariやホーム画面のアプリからはB1につなげません。</div>
+
+  <section class="card">
+    <div class="row"><span>プリンター:</span><span class="status" id="st">未接続</span></div>
+    <div class="row"><button class="btn" id="connect">B1とつなぐ</button><button class="btn" id="disconnect" hidden>切断</button></div>
+  </section>
+
+  <section class="card">
+    <button class="btn pri big" id="print">コピーしたラベルを印刷</button>
+    <p class="note" id="msg">Breed Managerで「印刷」を押すとラベルがコピーされます。このページに戻って、上のボタンを押してください（「ペースト」の確認が出たら許可）。</p>
+    <div class="thumbs" id="thumbs"></div>
+    <details>
+      <summary>貼り付けがうまくいかないとき</summary>
+      <p class="note">下の枠を長押しして「ペースト」してから、上のボタンを押してください。</p>
+      <textarea id="paste" placeholder="ここに貼り付け"></textarea>
+    </details>
+  </section>
+
+  <section class="card">
+    <div class="row">
+      <label>濃さ <select id="density"><option>1</option><option>2</option><option>3</option><option>4</option><option>5</option></select></label>
+      <label>向き <select id="dir"><option value="top">そのまま</option><option value="left">90度回す</option></select></label>
+    </div>
+    <button class="btn" id="test">テスト印刷（42×20mm）</button>
+    <p class="note">印刷が横向きや切れて出るときは「向き」を変えてください。設定はこのブラウザに保存されます。</p>
+  </section>
+</main>
+<script type="module">
+const $ = s => document.querySelector(s);
+const MAGIC = "BMPRINT1";
+const store = { get(k, d) { try { const v = localStorage.getItem("bmprint." + k); return v == null ? d : v; } catch { return d; } }, set(k, v) { try { localStorage.setItem("bmprint." + k, v); } catch {} } };
+$("#density").value = store.get("density", "3");
+$("#dir").value = store.get("dir", "top");
+$("#density").onchange = e => store.set("density", e.target.value);
+$("#dir").onchange = e => store.set("dir", e.target.value);
+
+const setStatus = (t, cls = "") => { const el = $("#st"); el.textContent = t; el.className = "status " + cls; };
+const say = t => { $("#msg").textContent = t; };
+
+if (!navigator.bluetooth) { $("#nobt").hidden = false; setStatus("Bluetoothが使えません", "err"); }
+
+let nb = null, client = null, connected = false, busy = false;
+async function lib() {
+  if (!nb) nb = await import("https://cdn.jsdelivr.net/npm/@mmote/niimbluelib@0.46.0/+esm");
+  return nb;
+}
+lib().catch(() => setStatus("印刷の部品を読み込めませんでした（通信を確認）", "err"));
+
+async function connect() {
+  const n = await lib();
+  if (client) { try { await client.disconnect(); } catch {} }
+  client = n.instantiateClient("bluetooth");
+  client.on("connect", () => { connected = true; setStatus("接続中", "ok"); $("#connect").hidden = true; $("#disconnect").hidden = false; });
+  client.on("disconnect", () => { connected = false; setStatus("未接続"); $("#connect").hidden = false; $("#disconnect").hidden = true; });
+  client.on("printprogress", e => say(`印刷中… ${e.page}/${e.pagesTotal}枚目`));
+  setStatus("つないでいます…", "warn");
+  await client.connect();
+}
+
+const loadImg = src => new Promise((res, rej) => { const i = new Image(); i.onload = () => res(i); i.onerror = () => rej(new Error("画像を読めませんでした")); i.src = src; });
+async function toCanvas(src, w, h) {
+  const img = await loadImg(src), c = document.createElement("canvas");
+  c.width = w; c.height = h;
+  const ctx = c.getContext("2d"); ctx.fillStyle = "#fff"; ctx.fillRect(0, 0, w, h); ctx.drawImage(img, 0, 0, w, h);
+  return c;
+}
+
+function parse(text) {
+  text = (text || "").trim();
+  if (!text.startsWith(MAGIC)) return null;
+  const job = JSON.parse(text.slice(MAGIC.length));
+  if (!job || !Array.isArray(job.pages) || !job.pages.length) return null;
+  return job;
+}
+async function readJob() {
+  const pasted = parse($("#paste").value);
+  if (pasted) return pasted;
+  if (!navigator.clipboard?.readText) throw new Error("コピーした内容を読めません。「貼り付けがうまくいかないとき」を使ってください");
+  let t;
+  try { t = await navigator.clipboard.readText(); } catch { throw new Error("コピーした内容を読めませんでした。もう一度押すか、「貼り付けがうまくいかないとき」を使ってください"); }
+  const job = parse(t);
+  if (!job) throw new Error("ラベルがコピーされていません。Breed Managerで「印刷」を押してから戻ってください");
+  return job;
+}
+
+function showThumbs(job) {
+  $("#thumbs").innerHTML = "";
+  for (const p of job.pages) { const i = new Image(); i.src = p.png; i.alt = p.id || "ラベル"; $("#thumbs").append(i); }
+}
+
+async function printJob(job) {
+  const n = await lib();
+  const [w, h] = job.px, canvases = [];
+  for (const p of job.pages) canvases.push(await toCanvas(p.png, w, h));
+  const dir = $("#dir").value, density = Number($("#density").value);
+  const task = client.protocol.newPrintTask(client.getPrintTaskType() || "B1", { totalPages: canvases.length, density, statusPollIntervalMs: 100, statusTimeoutMs: 8000 });
+  try {
+    await task.printInit();
+    for (const c of canvases) {
+      await task.printPage(n.ImageEncoder.encodeCanvas(c, n.PageColorType ? n.PageColorType.SingleColor : 0, dir), 1);
+      await task.waitForPageFinished();
+    }
+    await task.waitForFinished();
+  } finally { try { await task.printEnd(); } catch {} }
+}
+
+async function run(getJob) {
+  if (busy) return; busy = true;
+  const btns = [$("#print"), $("#test")]; btns.forEach(b => b.disabled = true);
+  try {
+    if (!connected) {
+      /* the Bluetooth picker needs this tap, so the job is read on the next one */
+      await connect();
+      say("つながりました。もう一度ボタンを押すと印刷します");
+      return;
+    }
+    const job = await getJob();
+    showThumbs(job);
+    say(`${job.pages.length}枚を印刷します…`);
+    await printJob(job);
+    say(`${job.pages.length}枚の印刷が終わりました。Breed Managerに戻れます`);
+    $("#paste").value = "";
+  } catch (e) {
+    const m = String(e?.message || e);
+    if (/cancel|User cancelled/i.test(m)) { say("つなぐのをやめました"); setStatus(connected ? "接続中" : "未接続", connected ? "ok" : ""); }
+    else say("うまくいきませんでした: " + m);
+    if (!connected) setStatus("未接続");
+  } finally { busy = false; btns.forEach(b => b.disabled = false); }
+}
+
+function testJob() {
+  const w = 336, h = 160, c = document.createElement("canvas"); c.width = w; c.height = h;
+  const x = c.getContext("2d");
+  x.fillStyle = "#fff"; x.fillRect(0, 0, w, h);
+  x.strokeStyle = "#000"; x.lineWidth = 4; x.strokeRect(2, 2, w - 4, h - 4);
+  x.fillStyle = "#000"; x.font = "700 34px sans-serif"; x.textBaseline = "middle";
+  x.fillText("↑ 上", 20, 40); x.fillText("TEST 42×20", 20, 100);
+  x.beginPath(); x.moveTo(w - 50, 30); x.lineTo(w - 20, 70); x.lineTo(w - 80, 70); x.closePath(); x.fill();
+  return { type: "sticker", px: [w, h], pages: [{ id: "TEST", png: c.toDataURL("image/png") }] };
+}
+
+$("#connect").onclick = () => { if (busy) return; busy = true; connect().catch(e => { say("つなげませんでした: " + (e?.message || e)); setStatus("未接続"); }).finally(() => { busy = false; }); };
+$("#disconnect").onclick = () => client?.disconnect();
+$("#print").onclick = () => run(readJob);
+$("#test").onclick = () => run(async () => testJob());
+</script>
+</body>
+</html>

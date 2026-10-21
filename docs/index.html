@@ -1247,9 +1247,12 @@ function drawCard(ctx, sp, W, H) {
   if (sp.birth) { ctx.font = `500 42px ${LMONO}`; ctx.fillText(sp.birth, pad, H - pad - 42, tw); }
   ctx.restore();
 }
-function renderCanvas(sp, type) {
-  const [w, h] = type === "card" ? CARD_PX : type === "cup" ? CUP_PX : TAG_PX, c = document.createElement("canvas"); c.width = w; c.height = h;
+/* out = [w, h] draws the same design at another resolution (the B1 prints at 8 dots per mm) */
+function renderCanvas(sp, type, out) {
+  const [w, h] = type === "card" ? CARD_PX : type === "cup" ? CUP_PX : TAG_PX, c = document.createElement("canvas");
+  c.width = out ? out[0] : w; c.height = out ? out[1] : h;
   const ctx = c.getContext("2d");
+  if (out) ctx.scale(out[0] / w, out[1] / h);
   if (type === "card") drawCard(ctx, sp, w, h); else if (type === "cup") drawCup(ctx, sp, w, h); else drawTag(ctx, sp, 0, 0, w, h);
   return c;
 }
@@ -1276,11 +1279,43 @@ async function specFor(id, type, q = {}) {
 }
 /* the frame cannot open the print dialog itself, so printing hands a label-sized PDF to the
    system share sheet (iPhone) or the browser download, where Print / the printer app is one tap */
-async function printNow(list, type, after) {
+async function labelSpecs(list, type) {
   try { await document.fonts?.ready; } catch {}
   const items = list.map(x => typeof x === "string" ? { refId: x } : x);
   const specs = (await Promise.all(items.map(it => specFor(it.refId, type, it)))).filter(Boolean);
   if (!specs.length) throw new Error("印刷できるものがありません");
+  return specs;
+}
+/* NIIMBOT B1 (Bluetooth only, so not in the iOS print screen): the labels are copied as images and
+   printed from print/ opened in Bluefy, a browser that can talk Bluetooth. Business cards stay on PDF. */
+const useB1 = type => type !== "card" && lsGet("leopa.b1", false);
+const B1_URL = ART_URL + "print/", B1_DONE = "コピーしました。Bluefyに切り替えて「コピーしたラベルを印刷」を押してください";
+async function b1Job(list, type) {
+  const specs = await labelSpecs(list, type), [mw, mh] = type === "cup" ? CUP_MM : TAG_MM, px = [mw * 8, mh * 8];
+  return { n: specs.length, text: "BMPRINT1" + JSON.stringify({ type, px, pages: specs.map(sp => ({ id: sp.id, png: renderCanvas(sp, type, px).toDataURL("image/png") })) }) };
+}
+function printB1(list, type, after) {
+  const job = b1Job(list, type);
+  /* iOS only lets a page write the clipboard during the tap, so the write starts now and waits for the images */
+  let copy = null;
+  try { if (window.ClipboardItem && navigator.clipboard?.write) copy = navigator.clipboard.write([new ClipboardItem({ "text/plain": job.then(j => new Blob([j.text], { type: "text/plain" })) })]); } catch {}
+  copy?.catch(() => {});
+  return job.then(async j => {
+    try { if (!copy) throw 0; await copy; } catch { b1CopySheet(j, after); return false; }
+    toast(B1_DONE); await after?.(); return true;
+  });
+}
+function b1CopySheet(j, after) {
+  openSheet({ title: "B1で印刷", render: s => {
+    s.body.innerHTML = `<p class="note">${j.n}枚のラベルを用意しました。コピーしてから、Bluefyで開いている印刷ページに切り替えてください。</p>
+      <button class="btn primary block big" data-b1="copy">ラベルをコピー</button>`;
+    s.body.onclick = async e => { if (!e.target.closest("[data-b1]")) return;
+      try { await navigator.clipboard.writeText(j.text); toast(B1_DONE); closeSheet(s); await after?.(); } catch { toast("コピーできませんでした"); } };
+  } });
+}
+async function printNow(list, type, after) {
+  if (useB1(type)) return printB1(list, type, after);
+  const specs = await labelSpecs(list, type);
   const name = ({ card: "名刺_", cup: "カップ_", sticker: "ラベル_" }[type]) + (specs.length === 1 ? specs[0].id : specs.length + "枚") + "_" + today() + ".pdf";
   const ok = await saveFile(name, toPdf(specs, type));
   if (ok) { toast("「プリント」かプリンターのアプリを選んでください"); await after?.(); }
@@ -2484,7 +2519,7 @@ $("#chat-in").addEventListener("keydown", e => { if (e.key === "Enter" && (e.met
 document.addEventListener("keydown", e => { if (e.key === "Escape" && sheets.length) closeSheet(sheets[sheets.length - 1]); });
 
 /* ---------- app: budget / backup strip, settings, automatic backup, updates ---------- */
-const APP_VERSION = "2026-10-19-4";
+const APP_VERSION = "2026-10-21-1";
 const fmtGB = b => (b / 1e9).toFixed(b >= 1e10 ? 0 : 1) + "GB";
 const fmtTime = t => t ? new Date(t).toLocaleString("ja-JP", { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" }) : "まだありません";
 function setPill(el, { val, ratio, state }) {
@@ -2568,6 +2603,12 @@ function settingsSheet(focus) {
       <section class="setsec"><h3>写真の読み取り</h3>
         <label class="toggle"><input type="checkbox" id="st-photoscan" ${lsGet("leopa.photoScan", false) ? "checked" : ""}>カメラ映像ではなく、写真を撮って読み取る</label>
       </section>
+      <section class="setsec" id="sec-printer"><h3>ラベルプリンター</h3>
+        <label class="toggle"><input type="checkbox" id="st-b1" ${lsGet("leopa.b1", false) ? "checked" : ""}>ラベルとカップラベルをNIIMBOT B1で印刷する（Bluefy経由）</label>
+        <p class="note" style="margin:0">「印刷」を押すとラベルがコピーされます。Bluefyで開いておいた印刷ページに切り替えて「コピーしたラベルを印刷」を押すと、B1から出ます。名刺はこれまでどおりPDFです。</p>
+        <p class="note" style="margin:0">はじめに: App Storeで「Bluefy」を入れ、Bluefyで次のページを開いてブックマークしておきます。<br><span class="mono">${esc(B1_URL)}</span></p>
+        <button class="btn sm" data-sx="b1url" style="align-self:flex-start">ページのアドレスをコピー</button>
+      </section>
       <p class="note" style="text-align:center">Breed Manager ${APP_VERSION}</p>`;
     if (focus) { const t = $("#sec-" + focus, s.body); t?.scrollIntoView({ block: "start" }); focus = ""; }
   };
@@ -2575,6 +2616,7 @@ function settingsSheet(focus) {
     draw(s);
     s.body.addEventListener("change", async e => {
       if (e.target.id === "st-photoscan") { lsSet("leopa.photoScan", e.target.checked); return; }
+      if (e.target.id === "st-b1") { lsSet("leopa.b1", e.target.checked); toast(e.target.checked ? "ラベルはB1で印刷します" : "ラベルはPDFで印刷します"); return; }
       if (e.target.id === "st-file") {
         const f = e.target.files && e.target.files[0]; if (!f) return;
         try { const n = await BM.data.importJSON(await f.text()); toast(n + "件のデータを読み込みました"); S.local.clear(); } catch (x) { toast(x.message); }
@@ -2606,6 +2648,7 @@ function settingsSheet(focus) {
           box.innerHTML = names.length ? `<p class="note">戻したい日を選んでください。今のiPhoneの台帳は、選んだ日の内容に置き換わります。</p><div class="list">${names.slice(0, 40).map(n => `<button class="row r3" data-rs="${esc(n)}"><span class="rid">${esc(n.replace(".json.gz", ""))}</span><span class="rmain"></span><span class="rsub">戻す</span></button>`).join("")}</div>` : `<p class="note">バックアップがまだありません。</p>`;
           return;
         }
+        else if (a === "b1url") { await navigator.clipboard.writeText(B1_URL); toast("アドレスをコピーしました。Bluefyに貼り付けて開いてください"); return; }
         else if (a === "unlink") { await BM.backup.unlink(); toast("Dropboxとのつなぎを外しました"); }
         else if (a === "export") { await S.dl.save({ filename: "breed-manager_" + today() + ".json", data: new Blob([await BM.data.exportJSON()], { type: "application/json" }) }); return; }
         else if (a === "import") { if (!armedImport) { armedImport = true; b.textContent = "もう一度で読み込む"; return; } armedImport = false; const f = $("#st-file", s.body); f.value = ""; f.click(); return; }
