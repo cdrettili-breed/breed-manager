@@ -2464,6 +2464,7 @@ function openGecko(id) {
         <div class="laybtns"><button class="btn abtn primary" data-q="lay">産卵を記録</button><button class="btn abtn" data-q="endlay">産卵終了</button></div></div>` : ""}
       <div class="hero">${sxHTML(g.sex)}<span class="midid">${esc(g.id)}</span>${pill(g.status)}${gradeHTML(g.grade)}<span class="muted small" style="margin-left:auto">${esc(useLabel(g))}</span></div>
       ${top}
+      <button class="btn block" data-ask style="margin:8px 0">💬 この個体についてチャットで聞く</button>
       ${photoStrip(g, !done)}
       <dl class="kv">
         <dt>モルフ</dt><dd>${esc(mz(g.morph) || "—")}${sale ? `<br><span class="muted small">${esc(morphEnOf(g))}</span>` : ""}</dd>
@@ -2491,6 +2492,7 @@ function openGecko(id) {
       <div class="botacts">${g.status !== "死亡" ? `<button class="btn abtn danger" data-q="dead">死亡</button>` : `<span></span>`}<button class="btn abtn" data-q="edit">編集</button></div>
       <button class="btn block${armDel ? " danger" : ""}" data-q="delete" style="margin-top:8px">${armDel ? "もう一度押すと削除します（24時間は復活できます）" : "この個体を削除（間違えて登録したとき）"}</button>`;
     s.body.onclick = async e => {
+      if (e.target.closest("[data-ask]")) return askAbout(g.id);
       const ph = e.target.closest("[data-photo]"); if (ph) return photoSheet(g.id, ph.dataset.photo);
       const gr = e.target.closest("[data-grade]");
       if (gr) { const v = g.grade === gr.dataset.grade ? "" : gr.dataset.grade; try { await updateGecko(g.id, { grade: v }); draw(s); } catch (x) { toast(x.message); } return; }
@@ -2544,8 +2546,9 @@ function openPairing(id) {
       ${qrRow(p.id, "ケージに貼っておけば、読み取るだけでこのペアの産卵を記録できます。")}
       ${cl.length ? `<h3 class="sec-h">産卵 <span class="count">${cl.length}回</span></h3><div class="hist">${cl.map(c => `<div><span>${esc(md(c.layDate))}</span><span>${idBtn(c.id)} 卵${c.eggs}個 ${pill(c.status)}</span></div>`).join("")}</div>` : ""}
       ${logHTML(p)}
+      <button class="btn block" data-ask style="margin-top:12px">💬 このペアについてチャットで聞く</button>
       ${delBtn(p.id, "ペアリング")}`;
-    s.body.onclick = async e => { if (await delClick(e, s, draw, deletePairing)) return; const b = e.target.closest("[data-q]"); if (!b) return;
+    s.body.onclick = async e => { if (e.target.closest("[data-ask]")) return askAbout(p.id); if (await delClick(e, s, draw, deletePairing)) return; const b = e.target.closest("[data-q]"); if (!b) return;
       if (b.dataset.q === "lay") return layForm(p.damId);
       try { await endPairing(p.id); toast("産卵終了にしました"); } catch (x) { toast(x.message); } };
   };
@@ -3016,7 +3019,30 @@ function mdHTML(t) {
   return linkify(out);
 }
 function scrollMsgs() { const m = $("#msgs"); requestAnimationFrame(() => m.scrollTop = m.scrollHeight); }
-function renderSugg() { $("#sugg").innerHTML = suggestions().map(s => `<button class="chip" data-ex="${esc(s)}">${esc(s)}</button>`).join("") + `<button class="chip edit" data-act="sugg-edit">＋編集</button>`; }
+/* asking about one record from its screen: the chat opens with that ID typed in and questions about it on top;
+   tapping one of those sends it right away */
+let chatCtx = null;
+function ctxQuestions(id) {
+  const c = collOf(id);
+  if (c === "geckos") {
+    const g = S.geckos.get(id), br = !g || isBreeding(g);
+    return br ? [id + "から生まれた子は何匹？", id + "の子の一覧", id + "の産卵と孵化の成績", id + "のペアリングの記録", id + "の履歴をまとめて"]
+      : [id + "の履歴をまとめて", id + "の両親は？", id + "と同じモルフの販売価格は？", id + "の兄弟は？"];
+  }
+  if (c === "pairings") return [id + "の産卵の記録", id + "の孵化率は？", id + "から生まれた子の一覧"];
+  if (c === "clutches") return [id + "の卵の状況", id + "から生まれた子は？"];
+  return [id + "について教えて"];
+}
+function askAbout(id) {
+  chatCtx = id;
+  while (sheets.length) closeSheet(sheets[0]);
+  askInChat(id + " ");
+  renderSugg();
+}
+function renderSugg() {
+  const ctx = chatCtx ? ctxQuestions(chatCtx).map(q => `<button class="chip" data-exsend="${esc(q)}" style="border-color:var(--accent)">${esc(q)}</button>`).join("") + `<button class="chip edit" data-act="ctx-clear" aria-label="この個体の質問を閉じる">×</button>` : "";
+  $("#sugg").innerHTML = ctx || suggestions().map(s => `<button class="chip" data-ex="${esc(s)}">${esc(s)}</button>`).join("") + `<button class="chip edit" data-act="sugg-edit">＋編集</button>`;
+}
 function renderChat(pending) {
   const m = $("#msgs");
   if (!turns.length && !pending) {
@@ -3094,6 +3120,7 @@ function attBlocks(list) {
 }
 async function send(text) {
   text = text.trim(); if ((!text && !pendingAtt.length) || ctl) return;
+  chatCtx = null;
   if (!sample || !toolsOk) { toast("チャットを使えません。アプリを開き直してください"); return; }
   const atts = pendingAtt.map(a => ({ ...a, n: chatAtt.push(null) }));
   for (const a of atts) chatAtt[a.n - 1] = a;
@@ -3155,6 +3182,7 @@ document.addEventListener("click", e => {
   const tab = t.closest("[data-tab]"); if (tab) { setTab(tab.dataset.tab); return; }
   const se = t.closest("[data-ses]"); if (se) { restoreSession(+se.dataset.ses); return; }
   const ex = t.closest("[data-ex]"); if (ex) { const i = $("#chat-in"); i.value = ex.dataset.ex; autosize(); i.focus(); return; }
+  const exs = t.closest("[data-exsend]"); if (exs) { const q = exs.dataset.exsend; chatCtx = null; send(q).then(renderTier); return; }
   const use = t.closest("[data-use]"); if (use) { S.f.use = use.dataset.use; S.f.status = ""; renderGeckosBody(); return; }
   const st = t.closest("[data-st]"); if (st) { S.f.status = st.dataset.st; renderGeckosBody(); return; }
   const vw = t.closest("[data-view]"); if (vw) { viewSheet(vw.dataset.view); return; }
@@ -3163,6 +3191,7 @@ document.addEventListener("click", e => {
   const a = act.dataset.act;
   if (a === "scan") startScan(openRecord);
   else if (a === "attach") { if (!S.hasKey) { toast("チャットを使うには設定でAPIキーを入れてください"); return; } $("#chat-file").click(); }
+  else if (a === "ctx-clear") { chatCtx = null; renderSugg(); }
   else if (a === "camera") { if (!S.hasKey) { toast("チャットを使うには設定でAPIキーを入れてください"); return; } $("#chat-cam").click(); }
   else if (a === "scan-chat") startScan(id => { const i = $("#chat-in"); i.value = (i.value.trim() ? i.value.trimEnd() + " " : "") + id + " "; autosize(); i.focus(); toast(id + " を入力しました"); });
   else if (a === "queue") queueSheet();
@@ -3184,7 +3213,7 @@ $("#chat-in").addEventListener("keydown", e => { if (e.key === "Enter" && (e.met
 document.addEventListener("keydown", e => { if (e.key === "Escape" && sheets.length) closeSheet(sheets[sheets.length - 1]); });
 
 /* ---------- app: budget / backup strip, settings, automatic backup, updates ---------- */
-const APP_VERSION = "2026-10-22-4";
+const APP_VERSION = "2026-10-22-5";
 const fmtGB = b => (b / 1e9).toFixed(b >= 1e10 ? 0 : 1) + "GB";
 const fmtTime = t => t ? new Date(t).toLocaleString("ja-JP", { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" }) : "まだありません";
 function setPill(el, { val, ratio, state }) {
