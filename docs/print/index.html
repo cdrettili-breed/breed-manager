@@ -39,6 +39,17 @@ details summary { cursor:pointer; color:var(--sub); font-size:14px; }
   <section class="card">
     <div class="row"><span>プリンター:</span><span class="status" id="st">未接続</span></div>
     <div class="row"><button class="btn" id="connect">B1とつなぐ</button><button class="btn" id="disconnect" hidden>切断</button></div>
+    <details id="help">
+      <summary>B1が一覧に出てこないとき</summary>
+      <ol class="note" style="padding-left:1.2em;margin:6px 0">
+        <li><b>NIIMBOTアプリを完全に終了</b>してください（アプリ切り替え画面で上にスワイプ）。B1は他のアプリとつながっている間、一覧に出てきません。</li>
+        <li>B1の電源を入れ直し、ランプが点いてから「B1とつなぐ」を押してください。</li>
+        <li>iPhoneの「設定 → Bluetooth」でB1が「接続済み」なら、ⓘ →「このデバイスの登録を解除」を押してください。</li>
+        <li>「設定 → アプリ → Bluefy」でBluetoothがオンか確認してください。</li>
+        <li>それでも出ないときは、下のボタンで近くの全部の機器を表示して、B1を選んでください。</li>
+      </ol>
+      <button class="btn" id="connect-all">近くの全部の機器から選ぶ</button>
+    </details>
   </section>
 
   <section class="card">
@@ -82,7 +93,13 @@ async function lib() {
 }
 lib().catch(() => setStatus("印刷の部品を読み込めませんでした（通信を確認）", "err"));
 
-async function connect() {
+/* wide: list every nearby device instead of only names that look like NIIMBOT printers */
+async function connect(wide) {
+  let device;
+  if (wide) {
+    /* the picker has to open within the tap, before anything else is awaited */
+    device = await navigator.bluetooth.requestDevice({ acceptAllDevices: true, optionalServices: ["e7810a71-73ae-499d-8c15-faa9aef0c3f2"] });
+  }
   const n = await lib();
   if (client) { try { await client.disconnect(); } catch {} }
   client = n.instantiateClient("bluetooth");
@@ -90,7 +107,7 @@ async function connect() {
   client.on("disconnect", () => { connected = false; setStatus("未接続"); $("#connect").hidden = false; $("#disconnect").hidden = true; });
   client.on("printprogress", e => say(`印刷中… ${e.page}/${e.pagesTotal}枚目`));
   setStatus("つないでいます…", "warn");
-  await client.connect();
+  await client.connect(device ? { authorizedDevice: device } : undefined);
 }
 
 const loadImg = src => new Promise((res, rej) => { const i = new Image(); i.onload = () => res(i); i.onerror = () => rej(new Error("画像を読めませんでした")); i.src = src; });
@@ -175,7 +192,9 @@ function testJob() {
   return { type: "sticker", px: [w, h], pages: [{ id: "TEST", png: c.toDataURL("image/png") }] };
 }
 
-$("#connect").onclick = () => { if (busy) return; busy = true; connect().catch(e => { say("つなげませんでした: " + (e?.message || e)); setStatus("未接続"); }).finally(() => { busy = false; }); };
+const tapConnect = wide => { if (busy) return; busy = true; connect(wide).catch(e => { const m = String(e?.message || e); say(/cancel|not found|No device/i.test(m) ? "B1が選ばれませんでした。上の「B1が一覧に出てこないとき」を確認してください" : "つなげませんでした: " + m); setStatus("未接続"); if (!wide) $("#help").open = true; }).finally(() => { busy = false; }); };
+$("#connect").onclick = () => tapConnect(false);
+$("#connect-all").onclick = () => tapConnect(true);
 $("#disconnect").onclick = () => client?.disconnect();
 $("#print").onclick = () => run(readJob);
 $("#test").onclick = () => run(async () => testJob());
