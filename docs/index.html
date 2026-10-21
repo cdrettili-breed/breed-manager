@@ -2118,7 +2118,8 @@ const LISTS = {
   wh: { key: "wh", st: "catalog", doc: "public/catalog", title: "卸リスト", sheet: "卸モード", name: "卸", price: "wholesalePrice", priceLabel: "卸価格（円）", pub: () => BM.catalog, chips: g => wholesaleChips(g) },
   rt: { key: "rt", st: "shop", doc: "public/shop", title: "販売リスト", sheet: "販売モード", name: "販売", price: "price", priceLabel: "販売価格（小売り・円）", pub: () => BM.shop, chips: g => priceChips(g) },
 };
-const geneLine = g => [g.homo ? "homo " + g.homo : "", g.het || ""].filter(Boolean).join(" ");
+/* what is shown next to the morph: het only (homo is kept for the genetics but not shown) */
+const geneLine = g => g.het || "";
 const listItems = M => (S[M.st].items || []);
 const listIds = M => new Set(listItems(M).map(x => x.id));
 const listEntry = (M, g, at) => ({ id: g.id, sex: g.sex || "", morph: g.morph || "", morphEn: morphEnOf(g), het: geneLine(g), birthDate: g.birthDate || "", price: g[M.price] ?? null, photos: (g.photos || []).map(p => p.id).slice(0, 6), at: at || nowTs() });
@@ -2292,7 +2293,6 @@ function openGecko(id) {
       <dl class="kv">
         <dt>モルフ</dt><dd>${esc(mz(g.morph) || "—")}${sale ? `<br><span class="muted small">${esc(morphEnOf(g))}</span>` : ""}</dd>
         ${g.base ? `<dt>ベース</dt><dd>${esc(mz(g.base))}</dd>` : ""}
-        <dt>homo</dt><dd>${esc(mz(g.homo) || "なし")}</dd>
         <dt>het</dt><dd>${esc(mz(g.het) || "なし")}</dd>
         <dt>評価</dt><dd><span class="gseg" role="group" aria-label="評価">${GRADES.map(x => `<button data-grade="${x}" aria-pressed="${g.grade === x}">${x}</button>`).join("")}</span></dd>
         ${g.name ? `<dt>呼び名</dt><dd>${esc(g.name)}</dd>` : ""}
@@ -2944,7 +2944,7 @@ $("#chat-in").addEventListener("keydown", e => { if (e.key === "Enter" && (e.met
 document.addEventListener("keydown", e => { if (e.key === "Escape" && sheets.length) closeSheet(sheets[sheets.length - 1]); });
 
 /* ---------- app: budget / backup strip, settings, automatic backup, updates ---------- */
-const APP_VERSION = "2026-10-21-7";
+const APP_VERSION = "2026-10-21-8";
 const fmtGB = b => (b / 1e9).toFixed(b >= 1e10 ? 0 : 1) + "GB";
 const fmtTime = t => t ? new Date(t).toLocaleString("ja-JP", { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" }) : "まだありません";
 function setPill(el, { val, ratio, state }) {
