@@ -561,12 +561,18 @@ const EN = [
 ];
 function toEnglish(text) {
   let s = " " + String(text || "").normalize("NFKC") + " ";
-  /* English names set in the morph registry come first, then the built-in table */
+  for (const [jp, en] of enTerms()) s = s.split(jp).join(" " + en + " ");
+  return s.replace(/\s+/g, " ").trim();
+}
+/* English names set in the morph registry come first, then the built-in table; rebuilt only when the registry changes */
+let enCache = null;
+function enTerms() {
+  if (enCache && enCache.l === S.lines && enCache.g === GENES && enCache.c === COMBOS) return enCache.terms;
   const reg = [...GENES.flatMap(g => g.en ? [[g.name, g.en], ...(g.al || []).map(a => [a, g.en]), ...(g.sup && g.sen ? [[g.sup, g.sen]] : [])] : []),
     ...COMBOS.flatMap(c => c.en ? [[c.name, c.en], ...(c.al || []).map(a => [a, c.en])] : [])];
-  const terms = [...S.lines.map(l => [l.name, l.en || l.name]), ...reg, ...EN].sort((a, b) => b[0].length - a[0].length);
-  for (const [jp, en] of terms) if (jp && /[^\x00-\x7f]/.test(jp)) s = s.split(jp).join(" " + en + " ");
-  return s.replace(/\s+/g, " ").trim();
+  const terms = [...S.lines.map(l => [l.name, l.en || l.name]), ...reg, ...EN].filter(([jp]) => jp && /[^\x00-\x7f]/.test(jp)).sort((a, b) => b[0].length - a[0].length);
+  enCache = { l: S.lines, g: GENES, c: COMBOS, terms };
+  return terms;
 }
 const morphEnOf = g => (g.morphEn || "").trim() || toEnglish(g.morph);
 /* morph names on screens and labels follow the chosen notation (設定 → モルフ名の表記); the data keeps what was entered */
@@ -1040,19 +1046,50 @@ async function saveCombo(old, v) {
   return c;
 }
 async function deleteCombo(c) { await saveMorphs(GENES, COMBOS.filter(x => x !== c)); }
+/* English names the registry is missing (lines with no English name, added genes/combos the built-in table does not know)
+   are asked from Claude in one short call with the user's key, saved marked as automatic, and shown in the registry to check */
+const laterEn = () => setTimeout(() => fillEnglish().then(n => { if (n) toast(n + "件の英語名を自動で入れました。モルフの登録で確認してください"); }).catch(() => {}), 100);
+const needsEn = t => /[^\x00-\x7f]/.test(toEnglish(t));
+let enBusy = null;
+function fillEnglish() {
+  if (enBusy) return enBusy;
+  enBusy = (async () => {
+    const lines = S.lines.filter(l => !l.en), genes = GENES.filter(g => !g.en && needsEn(g.name)), combos = COMBOS.filter(c => !c.en && needsEn(c.name));
+    const names = [...new Set([...lines.map(l => l.name), ...genes.map(g => g.name), ...combos.map(c => c.name)])];
+    if (!names.length || !sample) return 0;
+    const st = await BM.settings.get(); if (!st.apiKey) return 0;
+    const r = await sample("ヒョウモントカゲモドキ（レオパ）のモルフ名・ライン名を、海外のブリーダーが普通に使う英語表記にしてください。固有のライン名は自然な英語の綴りにします（例: ストーンウォッシュ → Stonewash、タンジェリン → Tangerine）。JSONだけを返してください。形式: {\"日本語名\": \"English\"}\n" + JSON.stringify(names), { modelTier: "quick" });
+    const m = String(r?.text || "").match(/\{[\s\S]*\}/); if (!m) return 0;
+    const map = JSON.parse(m[0]), en = n => String(map[n] || "").trim().slice(0, 60);
+    let n = 0;
+    if (lines.some(l => en(l.name))) {
+      const items = S.lines.map(l => !l.en && en(l.name) ? (n++, { ...l, en: en(l.name), enAuto: true }) : l);
+      await saveMeta("lines", { items }); S.lines = items;
+    }
+    if (genes.some(g => en(g.name)) || combos.some(c => en(c.name))) {
+      const g2 = GENES.map(g => !g.en && needsEn(g.name) && en(g.name) ? (n++, { ...g, en: en(g.name), enAuto: true }) : g);
+      const c2 = COMBOS.map(c => !c.en && needsEn(c.name) && en(c.name) ? (n++, { ...c, en: en(c.name), enAuto: true }) : c);
+      await saveMorphs(g2, c2);
+    }
+    schedule();
+    return n;
+  })().finally(() => { enBusy = null; });
+  return enBusy;
+}
 const geneText = k => { const [kk, n] = k.split(":"), g = geneOf(kk); return !g ? kk : n === "2" ? (g.sup || "スーパー" + g.name) : g.name; };
 function morphSheet(startTab) {
-  let tab = startTab || "line", armed = "";
+  let tab = startTab || "line", armed = "", enNote = "";
   const draw = s => {
-    const rows = tab === "gene" ? GENES.map((g, i) => ({ i, name: g.name + " / " + toEnglish(g.name), sub: GENE_TYPES.find(t => t[0] === g.type)?.[1] + (g.type === "inc" ? " · " + (g.sup || "") : "") + (g.het === false ? " · hetの候補に出さない" : "") }))
-      : tab === "combo" ? COMBOS.map((c, i) => ({ i, name: c.name + " / " + toEnglish(c.name), sub: "= " + c.set.map(k => mz(geneText(k))).join(" + ") }))
-      : S.lines.map((l, i) => ({ i, name: l.name + (l.en ? " / " + l.en : ""), sub: "= " + mz(l.base) }));
+    const rows = tab === "gene" ? GENES.map((g, i) => ({ i, name: g.name + " / " + toEnglish(g.name) + (g.enAuto ? "（自動）" : ""), sub: GENE_TYPES.find(t => t[0] === g.type)?.[1] + (g.type === "inc" ? " · " + (g.sup || "") : "") + (g.het === false ? " · hetの候補に出さない" : "") }))
+      : tab === "combo" ? COMBOS.map((c, i) => ({ i, name: c.name + " / " + toEnglish(c.name) + (c.enAuto ? "（自動）" : ""), sub: "= " + c.set.map(k => mz(geneText(k))).join(" + ") }))
+      : S.lines.map((l, i) => ({ i, name: l.name + " / " + (l.en ? l.en + (l.enAuto ? "（自動）" : "") : "英語名なし"), sub: "= " + mz(l.base) }));
     const help = { line: "ライン名はそのまま表示し、遺伝の計算だけ元のモルフで行います。同じライン同士の子はライン名、ラインと他の子は元のモルフ名で候補に出ます。個体ごとに中身が違うとき（このストーンウォッシュはラプター）は、個体の「ベースモルフ」に入れます。",
       combo: "中身の遺伝子がそろうと、子の候補にコンボ名で出ます。個体のモルフにコンボ名を書くと、中身の遺伝子として計算します。",
       gene: "遺伝子の名前と遺伝の仕方です。劣性の遺伝子はhetの候補に出ます。" }[tab];
     s.body.innerHTML = `
       <div class="qtabs" role="group" aria-label="種類">${[["line", "ライン"], ["combo", "コンボ"], ["gene", "ベース"]].map(([k, l]) => `<button data-mt="${k}" aria-pressed="${k === tab}">${l}</button>`).join("")}</div>
       <p class="note">${esc(help)}</p>
+      <p class="note" style="margin:0">英語名がないものは、保存したときにClaudeが自動で英語名を入れます（「（自動）」の印）。違っていたら「変更」で直してください。${enNote}</p>
       <button class="btn primary block" data-madd>＋ ${tab === "line" ? "ライン" : tab === "combo" ? "コンボ" : "遺伝子"}を追加</button>
       <div class="list" style="margin-top:12px">${rows.map(r => `<div class="row r3"><span class="rid">${esc(r.name)}</span><span class="rmain"><span class="rsub" style="white-space:normal">${esc(r.sub)}</span></span><span style="display:flex;gap:6px"><button class="btn sm" data-medit="${r.i}">変更</button><button class="btn sm${armed === tab + r.i ? " danger" : ""}" data-mdel="${r.i}">${armed === tab + r.i ? "もう一度で削除" : "削除"}</button></span></div>`).join("") || `<div class="empty">まだありません。</div>`}</div>
       ${tab === "gene" && GENES !== BASE_GENES ? `<button class="btn sm" data-mreset style="margin-top:10px">遺伝子を最初の内容に戻す</button>` : ""}`;
@@ -1065,14 +1102,14 @@ function morphSheet(startTab) {
       { k: "sen", label: "スーパー体の英語名", ph: toEnglish(g?.sup || "") || "例 Super Mack Snow", showIf: v => v.type === "inc" },
       { k: "al", label: "別名（読点で区切る）", ph: "例 トレンパーアルビノ、tremper" }],
     values: g ? { name: g.name, type: g.type, sup: g.sup || "", het: g.het === false ? "no" : "yes", en: g.en || "", sen: g.sen || "", al: (g.al || []).filter(a => a !== g.name).join("、") } : {},
-    onSubmit: async v => { const r = await saveGene(g, v); return r.name + " を保存しました"; } });
+    onSubmit: async v => { const r = await saveGene(g, v); laterEn(); return r.name + " を保存しました"; } });
   const comboForm = c => openForm({ title: c ? c.name + " を変更" : "コンボを追加", submit: "保存",
     fields: [{ k: "name", label: "コンボ名", ph: "例 ラプター" },
       { k: "parts", label: "中身の遺伝子", ph: "下からタップ（例 トレンパー エクリプス）", chips: GENES.map(g => g.type === "inc" ? [g.name, g.sup] : [g.name]).flat().filter(Boolean), append: true },
       { k: "en", label: "英語名", ph: toEnglish(c?.name || "") || "例 RAPTOR" },
       { k: "al", label: "別名（読点で区切る）", ph: "例 raptor" }],
     values: c ? { name: c.name, parts: c.set.map(geneText).join(" "), en: c.en || "", al: (c.al || []).filter(a => a !== c.name).join("、") } : {},
-    onSubmit: async v => { const r = await saveCombo(c, v); return r.name + " を保存しました"; } });
+    onSubmit: async v => { const r = await saveCombo(c, v); laterEn(); return r.name + " を保存しました"; } });
   const lineForm = l => openForm({ title: l ? l.name + " を変更" : "ラインを追加", submit: "保存",
     fields: [{ k: "name", label: "ライン名", ph: "例 ストーンウォッシュ" },
       { k: "base", label: "元のモルフ（計算に使う）", ph: "例 タンジェリン トレンパー", chips: baseChips(), append: true },
@@ -1082,10 +1119,12 @@ function morphSheet(startTab) {
       if (!String(v.base || "").trim()) throw new Error("元のモルフを入れてください");
       if (!l || fold(l.name) !== fold(v.name)) { const t = nameTaken(v.name, l); if (t) throw new Error(v.name + " はすでに" + t + "として登録されています"); }
       if (l && fold(l.name) !== fold(v.name)) await setLine(l.name, "");
-      const r = await setLine(v.name, v.base, v.en); return r.name + " を保存しました";
+      const r = await setLine(v.name, v.base, v.en); laterEn(); return r.name + " を保存しました";
     } });
   openSheet({ title: "モルフの登録", render: s => {
     draw(s);
+    const auto = () => fillEnglish().then(n => { if (n) { toast(n + "件の英語名を自動で入れました。確認してください"); draw(s); } }).catch(x => { enNote = "（英語名を自動で入れられませんでした: " + (x?.message || x) + "）"; draw(s); });
+    auto(); s.autoEn = auto;
     s.body.onclick = async e => {
       const t = e.target.closest("[data-mt]"); if (t) { tab = t.dataset.mt; armed = ""; draw(s); return; }
       if (e.target.closest("[data-madd]")) return tab === "gene" ? geneForm(null) : tab === "combo" ? comboForm(null) : lineForm(null);
@@ -2822,7 +2861,7 @@ $("#chat-in").addEventListener("keydown", e => { if (e.key === "Enter" && (e.met
 document.addEventListener("keydown", e => { if (e.key === "Escape" && sheets.length) closeSheet(sheets[sheets.length - 1]); });
 
 /* ---------- app: budget / backup strip, settings, automatic backup, updates ---------- */
-const APP_VERSION = "2026-10-21-5";
+const APP_VERSION = "2026-10-21-6";
 const fmtGB = b => (b / 1e9).toFixed(b >= 1e10 ? 0 : 1) + "GB";
 const fmtTime = t => t ? new Date(t).toLocaleString("ja-JP", { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" }) : "まだありません";
 function setPill(el, { val, ratio, state }) {
