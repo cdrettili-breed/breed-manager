@@ -20,6 +20,9 @@
   const kvSet = (k, v) => tx("kv", "readwrite", s => { s.put(v, k); });
   const clone = v => v === undefined ? undefined : JSON.parse(JSON.stringify(v));
   const err = (code, message) => Object.assign(new Error(message || code), { code });
+  /* ask the browser to keep this app's storage (ledger, photos, settings) even when the iPhone runs low on space.
+     App updates never touch it: a new version only replaces the app files, not this data. */
+  try { navigator.storage?.persist?.().catch(() => {}); } catch {}
 
   /* ---------- db ---------- */
   const docs = new Map(); // "coll/id" -> data

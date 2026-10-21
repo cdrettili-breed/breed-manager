@@ -407,6 +407,24 @@ const md = s => s ? s.slice(5).replace("-", "/") : "—";
 const yy = d => String(d || today()).slice(2, 4);
 const lsGet = (k, d) => { try { const v = localStorage.getItem(k); return v == null ? d : JSON.parse(v); } catch { return d; } };
 const lsSet = (k, v) => { try { localStorage.setItem(k, JSON.stringify(v)); } catch {} };
+/* switches the user sets (B1 printing, photo scanning, auto print queue, last incubation temperature, chat speed)
+   live in meta/settings.prefs so they are in backups and exports and survive every update; localStorage only
+   mirrors them for the moments before the ledger has loaded */
+const PREF_LS = { b1: "leopa.b1", photoScan: "leopa.photoScan", autoQueue: "leopa.autoQueue", temp: "leopa.temp", tier: "leopa.tier" };
+const pref = (k, d) => { const p = S.settings && S.settings.prefs; return p && k in p ? p[k] : lsGet(PREF_LS[k], d); };
+const setPref = (k, v) => {
+  lsSet(PREF_LS[k], v);
+  S.settings.prefs = { ...(S.settings.prefs || {}), [k]: v };
+  if (S.db) saveMeta("settings", { prefs: S.settings.prefs }).catch(e => console.warn("prefs", e));
+};
+/* first run of this version: copy switches set before into settings, once */
+function migratePrefs() {
+  if (!S.db || (S.settings.prefs && S.settings.prefs._v)) return;
+  const prefs = { ...(S.settings.prefs || {}), _v: 1 };
+  for (const [k, ls] of Object.entries(PREF_LS)) if (!(k in prefs)) { const v = lsGet(ls, undefined); if (v !== undefined) prefs[k] = v; }
+  S.settings.prefs = prefs;
+  saveMeta("settings", { prefs }).catch(e => console.warn("prefs", e));
+}
 function toast(msg) { const t = $("#toast"); t.textContent = msg; t.hidden = false; clearTimeout(toast.t); toast.t = setTimeout(() => t.hidden = true, 2800); }
 const isDate = b => !!b && /^\d{4}-\d{2}-\d{2}$/.test(b);
 const ageMonths = b => isDate(b) ? Math.max(0, Math.floor(daysBetween(b, today()) / 30.44)) : null;
@@ -1354,7 +1372,8 @@ function subscribe(db) {
   db.collection("printQueue").limit(1000).onSnapshot(into("queue", renderBadge), onErr);
   db.doc("meta/lines").onSnapshot(snap => { S.lines = snap.exists ? (snap.data().items || []) : []; schedule(); }, onErr);
   db.doc("meta/morphs").onSnapshot(snap => { applyMorphs(snap.exists ? snap.data() : null); schedule(); }, onErr);
-  db.doc("meta/settings").onSnapshot(snap => { S.settings = snap.exists ? snap.data() : {}; schedule(); }, onErr);
+  let prefsChecked = false;
+  db.doc("meta/settings").onSnapshot(snap => { S.settings = snap.exists ? snap.data() : {}; if (!prefsChecked) { prefsChecked = true; migratePrefs(); } schedule(); }, onErr);
   db.doc("public/catalog").onSnapshot(snap => { S.catalog = snap.exists ? { items: [], ...snap.data() } : { items: [] }; schedule(); if (catalogMode) renderCatalogPage(); }, onErr);
   db.doc("public/shop").onSnapshot(snap => { S.shop = snap.exists ? { items: [], ...snap.data() } : { items: [] }; schedule(); }, onErr);
   db.doc("meta/packing").onSnapshot(snap => { S.packing = snap.exists ? { items: [], ...snap.data() } : { items: [] }; schedule(); }, onErr);
@@ -1366,7 +1385,7 @@ const QSIZE = { sticker: "縦2cm×横4.2cm", cup: "2cm×2cm", card: "横9.1cm×�
 const qKey = (id, type) => type === "sticker" ? id : type + ":" + id;
 const qType = q => q.type === "card" || q.type === "cup" ? q.type : "sticker";
 const queued = (id, type) => S.queue.has(qKey(id, type));
-const autoQueue = () => lsGet("leopa.autoQueue", true);
+const autoQueue = () => pref("autoQueue", true);
 function renderBadge() { const b = $("#qbadge"); b.textContent = S.queue.size; b.hidden = !S.queue.size; }
 async function queueAdd(ids, type = "sticker", extra = {}) {
   needDb();
@@ -1767,7 +1786,7 @@ async function labelSpecs(list, type) {
 }
 /* NIIMBOT B1 (Bluetooth only, so not in the iOS print screen): the labels are copied as images and
    printed from print/ opened in Bluefy, a browser that can talk Bluetooth. Business cards stay on PDF. */
-const useB1 = type => type !== "card" && lsGet("leopa.b1", false);
+const useB1 = type => type !== "card" && pref("b1", false);
 const B1_URL = ART_URL + "print/";
 /* Bluefy opens a page from another app with bluefy://open?url=<encoded page URL> (checked on the iPhone) */
 const bluefyLink = url => "bluefy://open?url=" + encodeURIComponent(url);
@@ -1864,7 +1883,7 @@ function queueSheet(startType) {
   };
   openSheet({ title: "印刷待ち", refresh: draw, render: s => {
     draw(s);
-    s.body.addEventListener("change", e => { if (e.target.id === "q-auto") { lsSet("leopa.autoQueue", e.target.checked); toast(e.target.checked ? "登録時に印刷待ちへ追加します" : "登録時の自動追加をやめました"); } });
+    s.body.addEventListener("change", e => { if (e.target.id === "q-auto") { setPref("autoQueue", e.target.checked); toast(e.target.checked ? "登録時に印刷待ちへ追加します" : "登録時の自動追加をやめました"); } });
     s.body.onclick = async e => {
       const qt = e.target.closest("[data-qt]"); if (qt) { type = qt.dataset.qt; printed = null; draw(s); return; }
       const del = e.target.closest("[data-qdel]");
@@ -1894,7 +1913,7 @@ function queueSummary(id) {
 
 /* scanning: a photo from the camera (file input), decoded in the page */
 let scanCb = null;
-function startScan(cb) { scanCb = cb; if (navigator.mediaDevices?.getUserMedia && window.jsQR && !lsGet("leopa.photoScan", false)) return liveScan(cb); photoScan(); }
+function startScan(cb) { scanCb = cb; if (navigator.mediaDevices?.getUserMedia && window.jsQR && !pref("photoScan", false)) return liveScan(cb); photoScan(); }
 function photoScan() { const f = $("#scan-file"); f.value = ""; f.click(); }
 /* live camera scanning: point the camera at a label and it reads on its own */
 async function liveScan(cb) {
@@ -2051,7 +2070,7 @@ async function layForm(damId) {
   if (!dam) { toast(normId(damId) + " が見つかりません"); return; }
   if (dam.sex === "♂") { toast(dam.id + " はオスです"); return; }
   const pr = activePairingFor(dam.id), opts = tempChoices().map(o => o[0]);
-  const lastT = lsGet("leopa.temp", "28.5");
+  const lastT = pref("temp", "28.5");
   openForm({
     title: "産卵を記録", submit: "記録してQRを発行",
     intro: `<div class="infobox">${sxHTML(dam.sex)} <b class="mono">${esc(dam.id)}</b> ${esc(mz(dam.morph) || "")}<br>${pr ? `ペア ${idBtn(pr.id)} × ♂${idBtn(pr.sireId)} ${esc(mz(S.geckos.get(pr.sireId)?.morph) || "")}` : `<span style="color:var(--warn)">産卵中のペアリングがありません。父は不明で記録されます。</span>`}</div>`,
@@ -2060,7 +2079,7 @@ async function layForm(damId) {
       { k: "notes", label: "メモ", type: "textarea", adv: true }],
     values: { layDate: today() }, moreLabel: "メモ",
     onSubmit: async v => {
-      lsSet("leopa.temp", v.temp);
+      setPref("temp", v.temp);
       const r = await recordLaying({ damId: dam.id, ...v, ...resolveTemp(v.temp) });
       if (!r.queued) setTimeout(() => printNow([r.clutch.id], "sticker").catch(x => toast(x.message)), 60);
       return r.clutch.id + "（卵" + r.eggs.length + "個）を記録" + (r.queued ? "・シール印刷待ちに追加" : "しました");
@@ -2820,7 +2839,7 @@ function setTab(t) {
 /* ---------- Claude chat ---------- */
 let sample = null, toolsOk = false, toolMax = 20, ctl = null;
 let turns = lsGet("leopa.chat", []);
-let tier = lsGet("leopa.tier", "quick");
+let tier = pref("tier", "quick");
 const GECKO_PROPS = {
   sex: { type: "string", enum: ["♂", "♀", "不明"] }, morph: { type: "string" }, homo: { type: "string", description: "見た目に出ている潜性遺伝子（例 \"エクリプス\"）。スペース区切り" }, base: { type: "string", description: "遺伝の計算に使うベースモルフ（ライン個体の中身など）" }, het: { type: "string", description: "見た目に出ないhet。例 \"het トレンパーアルビノ 66%het エクリプス\"" }, morphEn: { type: "string", description: "名刺用の英語モルフ名（空なら自動変換）" },
   birthDate: { type: "string", description: "YYYY-MM-DD。年だけなら YYYY-01-01" }, incubTemp: { type: "number" },
@@ -3064,7 +3083,7 @@ document.addEventListener("click", e => {
   const use = t.closest("[data-use]"); if (use) { S.f.use = use.dataset.use; S.f.status = ""; renderGeckosBody(); return; }
   const st = t.closest("[data-st]"); if (st) { S.f.status = st.dataset.st; renderGeckosBody(); return; }
   const vw = t.closest("[data-view]"); if (vw) { viewSheet(vw.dataset.view); return; }
-  const tr = t.closest("[data-tier]"); if (tr) { tier = tr.dataset.tier; lsSet("leopa.tier", tier); renderTier(); return; }
+  const tr = t.closest("[data-tier]"); if (tr) { tier = tr.dataset.tier; setPref("tier", tier); renderTier(); return; }
   const act = t.closest("[data-act]"); if (!act) return;
   const a = act.dataset.act;
   if (a === "scan") startScan(openRecord);
@@ -3088,7 +3107,7 @@ $("#chat-in").addEventListener("keydown", e => { if (e.key === "Enter" && (e.met
 document.addEventListener("keydown", e => { if (e.key === "Escape" && sheets.length) closeSheet(sheets[sheets.length - 1]); });
 
 /* ---------- app: budget / backup strip, settings, automatic backup, updates ---------- */
-const APP_VERSION = "2026-10-21-12";
+const APP_VERSION = "2026-10-22-1";
 const fmtGB = b => (b / 1e9).toFixed(b >= 1e10 ? 0 : 1) + "GB";
 const fmtTime = t => t ? new Date(t).toLocaleString("ja-JP", { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" }) : "まだありません";
 function setPill(el, { val, ratio, state }) {
@@ -3203,7 +3222,7 @@ function settingsSheet(focus) {
           <div class="idrow"><input id="st-own" value="${esc(S.settings.ownBreeder || "")}" placeholder="例 cdrettili" autocomplete="off"><button class="btn" data-sx="own">保存</button></div></div>
       </section>
       <section class="setsec"><h3>写真の読み取り</h3>
-        <label class="toggle"><input type="checkbox" id="st-photoscan" ${lsGet("leopa.photoScan", false) ? "checked" : ""}>カメラ映像ではなく、写真を撮って読み取る</label>
+        <label class="toggle"><input type="checkbox" id="st-photoscan" ${pref("photoScan", false) ? "checked" : ""}>カメラ映像ではなく、写真を撮って読み取る</label>
       </section>
       <section class="setsec" id="sec-temps"><h3>孵卵温度</h3>
         <div class="field"><label>温度の選択肢（産卵の記録で選びます）</label>
@@ -3215,7 +3234,7 @@ function settingsSheet(focus) {
           <p class="note" style="margin:0">例: 31.5℃で始めて25日目に28.5℃。孵化予定日は温度変化も含めて計算します。登録した温度変化は、産卵の記録と卵の「温度・メモ」で選べます。</p></div>
       </section>
       <section class="setsec" id="sec-printer"><h3>ラベルプリンター</h3>
-        <label class="toggle"><input type="checkbox" id="st-b1" ${lsGet("leopa.b1", false) ? "checked" : ""}>ラベルとカップラベルをNIIMBOT B1で印刷する（Bluefy経由）</label>
+        <label class="toggle"><input type="checkbox" id="st-b1" ${pref("b1", false) ? "checked" : ""}>ラベルとカップラベルをNIIMBOT B1で印刷する（Bluefy経由）</label>
         <p class="note" style="margin:0">「印刷」を押すと、Bluefyで印刷ページが自動で開き、ラベルが渡されます。B1とつながっていればそのまま印刷され、初回やつながっていないときは「B1とつないで印刷」を1回押します。名刺はこれまでどおりPDFです。</p>
         <p class="note" style="margin:0">はじめに: App Storeで「Bluefy」を入れておいてください。印刷ページのアドレス: <span class="mono">${esc(B1_URL)}</span></p>
         <a class="btn sm" href="${esc(bluefyLink(B1_URL))}" style="align-self:flex-start;text-decoration:none">Bluefyで印刷ページを開く（テスト印刷・設定）</a>
@@ -3226,8 +3245,8 @@ function settingsSheet(focus) {
   openSheet({ title: "設定", render: s => {
     draw(s);
     s.body.addEventListener("change", async e => {
-      if (e.target.id === "st-photoscan") { lsSet("leopa.photoScan", e.target.checked); return; }
-      if (e.target.id === "st-b1") { lsSet("leopa.b1", e.target.checked); toast(e.target.checked ? "ラベルはB1で印刷します" : "ラベルはPDFで印刷します"); return; }
+      if (e.target.id === "st-photoscan") { setPref("photoScan", e.target.checked); return; }
+      if (e.target.id === "st-b1") { setPref("b1", e.target.checked); toast(e.target.checked ? "ラベルはB1で印刷します" : "ラベルはPDFで印刷します"); return; }
       if (e.target.id === "st-file") {
         const f = e.target.files && e.target.files[0]; if (!f) return;
         try { const n = await BM.data.importJSON(await f.text()); toast(n + "件のデータを読み込みました"); S.local.clear(); } catch (x) { toast(x.message); }
