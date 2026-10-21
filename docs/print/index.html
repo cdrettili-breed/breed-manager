@@ -38,17 +38,15 @@ details summary { cursor:pointer; color:var(--sub); font-size:14px; }
 
   <section class="card">
     <div class="row"><span>プリンター:</span><span class="status" id="st">未接続</span></div>
-    <div class="row"><button class="btn" id="connect">B1とつなぐ</button><button class="btn" id="disconnect" hidden>切断</button></div>
+    <div class="row"><button class="btn" id="connect">近くの機器からB1を選んでつなぐ</button><button class="btn" id="disconnect" hidden>切断</button></div>
     <details id="help">
       <summary>B1が一覧に出てこないとき</summary>
       <ol class="note" style="padding-left:1.2em;margin:6px 0">
         <li><b>NIIMBOTアプリを完全に終了</b>してください（アプリ切り替え画面で上にスワイプ）。B1は他のアプリとつながっている間、一覧に出てきません。</li>
-        <li>B1の電源を入れ直し、ランプが点いてから「B1とつなぐ」を押してください。</li>
+        <li>B1の電源を入れ直し、ランプが点いてから「近くの機器からB1を選んでつなぐ」を押してください。</li>
         <li>iPhoneの「設定 → Bluetooth」でB1が「接続済み」なら、ⓘ →「このデバイスの登録を解除」を押してください。</li>
         <li>「設定 → アプリ → Bluefy」でBluetoothがオンか確認してください。</li>
-        <li>それでも出ないときは、下のボタンで近くの全部の機器を表示して、B1を選んでください。</li>
       </ol>
-      <button class="btn" id="connect-all">近くの全部の機器から選ぶ</button>
     </details>
   </section>
 
@@ -174,7 +172,7 @@ async function run(getJob) {
   const btns = [$("#print"), $("#test")]; btns.forEach(b => b.disabled = true);
   try {
     if (!connected) {
-      await connect();
+      await connect(true);
       /* the clipboard can only be read in a tap of its own; labels from the link or the test print go on right away */
       if (getJob.needsTap) { say("つながりました。もう一度ボタンを押すと印刷します"); return; }
     }
@@ -203,9 +201,8 @@ function testJob() {
   return { type: "sticker", px: [w, h], pages: [{ id: "TEST", png: c.toDataURL("image/png") }] };
 }
 
-const tapConnect = wide => { if (busy) return; busy = true; connect(wide).catch(e => { const m = String(e?.message || e); say(/cancel|not found|No device/i.test(m) ? "B1が選ばれませんでした。上の「B1が一覧に出てこないとき」を確認してください" : "つなげませんでした: " + m); setStatus("未接続"); if (!wide) $("#help").open = true; }).finally(() => { busy = false; }); };
-$("#connect").onclick = () => tapConnect(false);
-$("#connect-all").onclick = () => tapConnect(true);
+const tapConnect = wide => { if (busy) return; busy = true; connect(wide).catch(e => { const m = String(e?.message || e); say(/cancel|not found|No device/i.test(m) ? "B1が選ばれませんでした。上の「B1が一覧に出てこないとき」を確認してください" : "つなげませんでした: " + m); setStatus("未接続"); $("#help").open = true; }).finally(() => { busy = false; }); };
+$("#connect").onclick = () => tapConnect(true);
 $("#disconnect").onclick = () => client?.disconnect();
 readJob.needsTap = true;
 $("#print").onclick = () => run(linkJob ? async () => linkJob : readJob);
