@@ -1,6 +1,6 @@
 /* Breed Manager service worker: keeps the app usable offline, picks up new versions on the next open,
    and serves photos stored in IndexedDB at "_blob/<id>". Bump VERSION on every release. */
-const VERSION = "2026-10-25-1";
+const VERSION = "2026-10-25-2";
 const SHELL = `bm-shell-${VERSION}`, LIBS = "bm-libs-v1";
 const SHELL_FILES = ["./", "./index.html", "./config.js", "./runtime.js", "./manifest.webmanifest", "./icons/icon-192.png", "./icons/icon-512.png", "./icons/apple-touch-icon.png"];
 

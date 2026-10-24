@@ -869,6 +869,17 @@ const TRASH_MS = 24 * 3600e3;
 async function deleteGecko(rawId) {
   needDb();
   const g = await getRec("geckos", rawId); if (!g) throw new Error(normId(rawId) + " という個体は見つかりません");
+  /* its pairings (with their layings) and its own layings go to the trash first, so nothing is left on the breeding
+     tab; one that already has hatched geckos is only ended (the geckos keep their parents) */
+  const withIds = [], ended = [];
+  const pairs = [...(await S.db.collection("pairings").where("damId", "==", g.id).get()).docs, ...(await S.db.collection("pairings").where("sireId", "==", g.id).get()).docs].map(d => d.data());
+  for (const p of pairs) {
+    try { await deletePairing(p.id); withIds.push(p.id); }
+    catch { if (isActivePair(p)) { await endPairing(p.id).catch(() => {}); ended.push(p.id); } }
+  }
+  for (const d of (await S.db.collection("clutches").where("damId", "==", g.id).get()).docs) {
+    try { await deleteClutch(d.id); withIds.push(d.id); } catch {}
+  }
   const r = await serial(async () => {
     let eggBack = false;
     const e = g.eggId ? await getRec("eggs", g.eggId).catch(() => null) : null;
@@ -878,7 +889,7 @@ async function deleteGecko(rawId) {
       if (c) await settleClutch(c.id, { hatched: Math.max(0, (c.hatched || 0) - 1), offspringIds: (c.offspringIds || []).filter(x => x !== g.id) }, g.id + " を削除（" + e.id + " は孵卵中に戻す）");
       eggBack = true;
     }
-    await S.db.doc("trash/" + g.id).set({ id: g.id, coll: "geckos", doc: g, deletedAt: nowTs(), eggBack });
+    await S.db.doc("trash/" + g.id).set({ id: g.id, coll: "geckos", doc: g, deletedAt: nowTs(), eggBack, with: withIds });
     await S.db.doc("geckos/" + g.id).delete();
     S.local.delete("geckos/" + g.id); S.geckos.delete(g.id);
     if (S.archive) S.archive = S.archive.filter(x => x.id !== g.id);
@@ -889,7 +900,7 @@ async function deleteGecko(rawId) {
   await listsDrop(g.id);
   if (packItems().some(x => x.id === g.id)) { const items = packItems().filter(x => x.id !== g.id); await saveMeta("packing", { items }).catch(() => {}); S.packing = { ...S.packing, items }; }
   schedule();
-  return { id: g.id, ...r };
+  return { id: g.id, ...r, with: withIds, ended };
 }
 async function listTrash() {
   if (!S.db) return [];
@@ -897,6 +908,13 @@ async function listTrash() {
   return snap.docs.map(d => d.data()).sort((a, b) => b.deletedAt.localeCompare(a.deletedAt));
 }
 async function restoreGecko(id) {
+  const withIds = ((await S.db.doc("trash/" + id).get()).data?.() || {}).with || [];
+  const g = await restoreGeckoOnly(id);
+  /* the pairings and layings deleted with it come back too (those still in the trash) */
+  for (const w of withIds) await restoreTrash(w).catch(() => {});
+  return g;
+}
+async function restoreGeckoOnly(id) {
   needDb();
   return serial(async () => {
     const t = (await S.db.doc("trash/" + id).get()).data?.(); if (!t) throw new Error(id + " は見つかりません（完全に削除済みかもしれません）");
@@ -921,17 +939,24 @@ async function deletePairing(rawId) {
   needDb();
   const r = await serial(async () => {
     const p = await getRec("pairings", rawId); if (!p) throw new Error(normId(rawId) + " は見つかりません");
-    const lays = (await S.db.collection("clutches").where("pairingId", "==", p.id).get()).docs.map(d => d.id);
-    if (lays.length) throw new Error(p.id + " には産卵の記録（" + lays.join("・") + "）があります。先に産卵を削除してください");
+    /* its layings (and their eggs) go to the trash with it, unless a gecko has hatched from one */
+    const lays = (await S.db.collection("clutches").where("pairingId", "==", p.id).get()).docs.map(d => d.data());
+    const bundles = [];
+    for (const c of lays) {
+      const eggs = await eggsOf(c), kids = [...(c.offspringIds || []), ...eggs.filter(e => e.offspringId).map(e => e.offspringId)];
+      if (kids.length) throw new Error(c.id + " から生まれた個体（" + [...new Set(kids)].join("・") + "）がいます。先にその個体を削除してください");
+      bundles.push({ doc: c, eggs });
+    }
+    for (const b of bundles) { for (const e of b.eggs) await dropRec("eggs", e.id); await dropRec("clutches", b.doc.id); }
     /* a pairing that this one ended when it was registered goes back to laying */
     const prev = [...S.pairings.values()].find(x => x.damId === p.damId && x.id !== p.id && !isActivePair(x) && (x.log || []).slice(-1)[0]?.t.includes("新しいペアリング " + p.id));
     if (prev) await putRec("pairings", prev.id, { status: "産卵中", endDate: "" }, "産卵中に戻す（" + p.id + " を削除）");
-    await S.db.doc("trash/" + p.id).set({ id: p.id, coll: "pairings", doc: p, deletedAt: nowTs(), reopened: prev ? prev.id : "" });
+    await S.db.doc("trash/" + p.id).set({ id: p.id, coll: "pairings", doc: p, deletedAt: nowTs(), reopened: prev ? prev.id : "", lays: bundles });
     await dropRec("pairings", p.id);
     await logTo("geckos", p.damId, "ペアリング " + p.id + " を削除"); await logTo("geckos", p.sireId, "ペアリング " + p.id + " を削除");
-    return { id: p.id, reopened: prev ? prev.id : "" };
+    return { id: p.id, reopened: prev ? prev.id : "", lays: bundles.map(b => b.doc.id), eggs: bundles.flatMap(b => b.eggs.map(e => e.id)) };
   });
-  await unqueue([r.id]); schedule(); return r;
+  await unqueue([r.id, ...(r.lays || []), ...(r.eggs || [])]); schedule(); return r;
 }
 async function deleteClutch(rawId) {
   needDb();
@@ -960,7 +985,7 @@ async function deleteEgg(rawId) {
     if (c) await settleClutch(c.id, { eggIds: (c.eggIds || []).filter(x => x !== e.id), eggs: Math.max(0, (c.eggs || 1) - 1), ...(e.status === "不良" ? { failed: Math.max(0, (c.failed || 0) - 1) } : {}) }, "卵 " + e.id + " を削除");
     return { id: e.id };
   });
-  await unqueue([r.id]); schedule(); return r;
+  await unqueue([r.id, ...(r.lays || []), ...(r.eggs || [])]); schedule(); return r;
 }
 async function restoreTrash(id) {
   const t = (await S.db.doc("trash/" + id).get()).data?.(); if (!t) throw new Error(id + " は見つかりません（完全に削除済みかもしれません）");
@@ -975,6 +1000,7 @@ async function restoreTrash(id) {
       if (prev && isActivePair(prev)) await putRec("pairings", prev.id, { status: "終了", endDate: t.doc.date }, "終了（" + id + " を復活）");
     }
     if (t.coll === "clutches") for (const e of t.eggs || []) await S.db.doc("eggs/" + e.id).set(back(e));
+    if (t.coll === "pairings") for (const b of t.lays || []) { await S.db.doc("clutches/" + b.doc.id).set(back(b.doc)); for (const e of b.eggs || []) await S.db.doc("eggs/" + e.id).set(back(e)); }
     if (t.coll === "eggs") {
       const c = await getRec("clutches", t.doc.clutchId).catch(() => null);
       if (c) await settleClutch(c.id, { eggIds: [...new Set([...(c.eggIds || []), id])], eggs: (c.eggs || 0) + 1, ...(t.doc.status === "不良" ? { failed: (c.failed || 0) + 1 } : {}) }, "卵 " + id + " を復活");
@@ -2525,7 +2551,7 @@ function openGecko(id) {
       if (q === "delete") {
         if (!armDel) { armDel = g.id; draw(s); return; }
         armDel = "";
-        try { const r = await deleteGecko(g.id); closeSheet(s); toast(r.id + " を削除しました" + (r.eggBack ? "（卵は孵卵中に戻しました）" : "") + "。設定の「削除したデータ」から24時間は復活できます"); } catch (x) { toast(x.message); draw(s); }
+        try { const r = await deleteGecko(g.id); closeSheet(s); toast(r.id + " を削除しました" + (r.with?.length ? "（ペアリング・産卵 " + r.with.length + "件も一緒に）" : "") + (r.eggBack ? "（卵は孵卵中に戻しました）" : "") + "。設定の「削除したデータ」から24時間は復活できます"); } catch (x) { toast(x.message); draw(s); }
         return;
       }
       if (q === "edit") editGeckoForm(g); else if (q === "sell") sellForm(g); else if (q === "dead") deathForm(g);
@@ -3237,7 +3263,7 @@ $("#chat-in").addEventListener("keydown", e => { if (e.key === "Enter" && (e.met
 document.addEventListener("keydown", e => { if (e.key === "Escape" && sheets.length) closeSheet(sheets[sheets.length - 1]); });
 
 /* ---------- app: budget / backup strip, settings, automatic backup, updates ---------- */
-const APP_VERSION = "2026-10-25-1";
+const APP_VERSION = "2026-10-25-2";
 const fmtGB = b => (b / 1e9).toFixed(b >= 1e10 ? 0 : 1) + "GB";
 const fmtTime = t => t ? new Date(t).toLocaleString("ja-JP", { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" }) : "まだありません";
 function setPill(el, { val, ratio, state }) {
