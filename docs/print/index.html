@@ -118,7 +118,7 @@ async function toCanvas(src, w, h) {
 
 function parse(text) {
   text = (text || "").trim();
-  if (!text.startsWith(MAGIC)) return null;
+  if (!/^BMPRINT[12]/.test(text)) return null;
   const job = JSON.parse(text.slice(MAGIC.length));
   if (!job || !Array.isArray(job.pages) || !job.pages.length) return null;
   return job;
@@ -180,6 +180,8 @@ async function run(getJob) {
     await showThumbs(job);
     say(`${job.pages.length}枚を印刷します…`);
     await printJob(job);
+    markDone(job.jid);
+    if (linkJob && linkJob === job) { linkJob = null; $("#print").textContent = "コピーしたラベルを印刷"; }
     say(`${job.pages.length}枚の印刷が終わりました。Breed Managerに戻れます`);
     $("#paste").value = "";
   } catch (e) {
@@ -231,6 +233,24 @@ async function fromLink() {
 }
 fromLink();
 window.addEventListener("hashchange", fromLink);
+
+/* labels handed over by copy while this page stays open and connected (Breed Manager copies them, then switches here
+   with bluefy://): read them when the page comes to the front; each job prints once */
+const doneJids = () => { try { return JSON.parse(localStorage.getItem("bmprint.done") || "[]"); } catch { return []; } };
+function markDone(jid) { if (!jid) return; try { localStorage.setItem("bmprint.done", JSON.stringify([jid, ...doneJids().filter(x => x !== jid)].slice(0, 30))); } catch {} }
+async function fromClipboard() {
+  if (busy || document.visibilityState !== "visible" || !navigator.clipboard?.readText) return;
+  let t;
+  try { t = await navigator.clipboard.readText(); } catch { say(connected ? "「コピーしたラベルを印刷」を押すと印刷します" : "上のボタンでB1とつないでください"); return; }
+  let job = null; try { job = parse(t); } catch {}
+  if (!job || !job.jid || doneJids().includes(job.jid)) return;
+  linkJob = job;
+  await showThumbs(job);
+  $("#print").textContent = (connected ? "印刷" : "B1とつないで印刷") + `（${job.pages.length}枚）`;
+  if (connected) await run(async () => job);
+  else say(`${job.pages.length}枚のラベルを受け取りました。上のボタンを押すとB1とつないで印刷します。`);
+}
+document.addEventListener("visibilitychange", () => { if (document.visibilityState === "visible") setTimeout(fromClipboard, 300); });
 </script>
 </body>
 </html>
