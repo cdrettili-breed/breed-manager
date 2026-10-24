@@ -1882,20 +1882,32 @@ function previewSheet(id, type) {
 function queueSheet(startType) {
   let type = startType || Object.keys(QTYPES).find(t => [...S.queue.values()].some(q => qType(q) === t)) || "sticker";
   let printed = null;
+  /* B1: the labels are drawn and packed as soon as the list is shown, so the print button is a plain link to Bluefy
+     and iOS switches apps on the tap itself (drawing many labels after the tap made iOS ignore the switch) */
+  let prep = { key: "", link: "", items: [] };
   const order = (a, b) => type === "cup" ? (Number(a.packNo) || 0) - (Number(b.packNo) || 0) : String(a.addedAt).localeCompare(String(b.addedAt));
   const draw = s => {
     const all = [...S.queue.entries()].map(([k, q]) => ({ k, ...q, type: qType(q) }));
     const items = all.filter(q => q.type === type).sort(order);
     const n = t => all.filter(q => q.type === t).length;
+    const b1 = useB1(type) && items.length, key = b1 ? type + ":" + items.map(q => q.k + (q.packNo ?? "")).join(",") : "";
+    if (b1 && prep.key !== key) {
+      const list = items.map(q => ({ k: q.k, refId: q.refId, packNo: q.packNo, addedAt: q.addedAt }));
+      prep = { key, link: "", items: list };
+      b1Job(list, type).then(j => { if (prep.key === key) { prep.link = j.link; draw(s); } }).catch(x => { if (prep.key === key) { prep.err = x.message; draw(s); } });
+    }
+    const printBtn = !items.length ? "" : !b1 ? `<button class="btn primary block big" data-qa="print">${QTYPES[type]}をまとめて印刷（${items.length}枚）</button>`
+      : prep.link ? `<a class="btn primary block big" href="${esc(prep.link)}" data-qa="b1go" style="display:flex;align-items:center;justify-content:center;text-decoration:none">${QTYPES[type]}をB1でまとめて印刷（${items.length}枚）</a>`
+      : `<button class="btn primary block big" disabled>${prep.err ? "ラベルを用意できませんでした: " + esc(prep.err) : "ラベルを用意しています…（" + items.length + "枚）"}</button>`;
     s.body.innerHTML = `
       <div class="qtabs" role="group" aria-label="印刷の種類">${Object.entries(QTYPES).map(([t, l]) => `<button data-qt="${t}" aria-pressed="${t === type}">${l}（${n(t)}）</button>`).join("")}</div>
       ${printed ? `<div class="infobox">印刷できたら、印刷した${printed.length}枚を待ちリストから消してください。${type === "card" ? "育成中の個体は販売中になります。" : ""}<div class="quick" style="margin:8px 0 0"><button class="btn primary sm" data-qa="done">印刷できた（${printed.length}枚）</button><button class="btn sm" data-qa="keep">消さずに残す</button></div></div>` : ""}
-      ${items.length ? `<button class="btn primary block big" data-qa="print">${QTYPES[type]}をまとめて印刷（${items.length}枚）</button>
+      ${items.length ? `${printBtn}
         <div class="list" style="margin-top:12px">${items.map(q => `<div class="row r3"><button class="idlink rid" data-open="${esc(q.refId)}">${esc(q.refId)}</button><span class="rmain"><span class="rmorph">${q.packNo ? `<b class="mono">No.${esc(q.packNo)}</b> ` : ""}${esc(queueSummary(q.refId))}</span></span><button class="btn sm" data-qdel="${esc(q.k)}" aria-label="${esc(q.refId)} を外す">外す</button></div>`).join("")}</div>`
         : `<div class="empty">${QTYPES[type]}の印刷待ちはありません。</div>`}
       ${type === "sticker" ? `<label class="toggle" style="margin-top:14px;align-items:flex-start"><input type="checkbox" id="q-auto" ${autoQueue() ? "checked" : ""}>ペアリング・産卵・孵化・個体登録のたびに、ラベルを自動で印刷待ちに追加する</label>`
         : `<p class="note" style="margin-top:14px">${type === "cup" ? "カップラベルはパッキングモードから追加します。番号順に印刷します。" : "名刺は、個体の画面の「名刺」かパッキングモードから追加します。"}</p>`}
-      <p class="note">${QSIZE[type]}の印刷用PDF（1ページ1枚）が開きます。iPhoneでは「プリント」かプリンターのアプリを選んでください。</p>`;
+      <p class="note">${useB1(type) ? "押すとBluefyで印刷ページが開き、B1から印刷します。" : QSIZE[type] + "の印刷用PDF（1ページ1枚）が開きます。iPhoneでは「プリント」かプリンターのアプリを選んでください。"}</p>`;
   };
   openSheet({ title: "印刷待ち", refresh: draw, render: s => {
     draw(s);
@@ -1907,6 +1919,7 @@ function queueSheet(startType) {
       const a = e.target.closest("[data-qa]"); if (!a) return;
       const act = a.dataset.qa;
       if (act === "keep") { printed = null; draw(s); return; }
+      if (act === "b1go") { const list = prep.items; setTimeout(() => { printed = list; draw(s); }, 800); return; }
       a.disabled = true;
       try {
         if (act === "done") {
@@ -3213,7 +3226,7 @@ $("#chat-in").addEventListener("keydown", e => { if (e.key === "Enter" && (e.met
 document.addEventListener("keydown", e => { if (e.key === "Escape" && sheets.length) closeSheet(sheets[sheets.length - 1]); });
 
 /* ---------- app: budget / backup strip, settings, automatic backup, updates ---------- */
-const APP_VERSION = "2026-10-22-5";
+const APP_VERSION = "2026-10-24-1";
 const fmtGB = b => (b / 1e9).toFixed(b >= 1e10 ? 0 : 1) + "GB";
 const fmtTime = t => t ? new Date(t).toLocaleString("ja-JP", { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" }) : "まだありません";
 function setPill(el, { val, ratio, state }) {
