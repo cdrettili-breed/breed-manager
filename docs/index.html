@@ -1035,14 +1035,13 @@ function trashSheet() {
       try { const d = await restoreTrash(b.dataset.restore); toast(d.id + " を復活しました"); await draw(); } catch (x) { toast(x.message); b.disabled = false; } };
   } });
 }
-/* the two-tap delete button on the pairing / clutch / egg screens */
-let armRec = "";
-const delBtn = (id, what) => `<button class="btn block${armRec === id ? " danger" : ""}" data-del="${esc(id)}" style="margin-top:12px">${armRec === id ? "もう一度押すと削除します（24時間は復活できます）" : "この" + what + "を削除（間違えて登録したとき）"}</button>`;
+/* the delete button on the pairing / clutch / egg screens (asks once more in a popup) */
+const delBtn = (id, what) => `<button class="btn block danger" data-del="${esc(id)}" style="margin-top:12px">この${what}を削除（間違えて登録したとき）</button>`;
 async function delClick(e, s, draw, fn) {
   const b = e.target.closest("[data-del]"); if (!b) return false;
   const id = b.dataset.del;
-  if (armRec !== id) { armRec = id; draw(s); return true; }
-  armRec = "";
+  const what = { pairings: "ペアリング", clutches: "産卵（卵もまとめて）", eggs: "卵" }[collOf(id)] || "";
+  if (!confirm(id + " の" + what + "を削除しますか？\n\n24時間以内なら「設定 → 削除したデータ」から復活できます。")) return true;
   try { const r = await fn(id); closeSheet(s); toast(r.id + " を削除しました" + (r.reopened ? "（" + r.reopened + " は産卵中に戻しました）" : "") + "。設定の「削除したデータ」から24時間は復活できます"); }
   catch (x) { toast(x.message); draw(s); }
   return true;
@@ -1455,35 +1454,55 @@ function fieldHTML(f, v) {
   if (f.type === "select") c = `<select id="${id}">${f.options.map(o => { const [val, lab] = optPair(o); return `<option value="${esc(val)}"${String(val) === String(v) ? " selected" : ""}>${esc(lab)}</option>`; }).join("")}</select>`;
   else if (f.type === "seg") c = `<div class="seg" role="radiogroup" aria-label="${esc(f.label)}">${f.options.map((o, i) => { const [val, lab] = optPair(o); return `<label><input type="radio" name="${id}" id="${id}-${i}" value="${esc(val)}"${String(val) === String(v) ? " checked" : ""}><span>${esc(lab)}</span></label>`; }).join("")}</div>`;
   else if (f.type === "textarea") c = `<textarea id="${id}" rows="2" placeholder="${esc(f.ph || "")}">${esc(v)}</textarea>`;
-  else if (f.type === "het") c = `<input id="${id}" type="text" value="${esc(v)}" placeholder="例 het トレンパー 66%het エクリプス" autocomplete="off">
+  else if (f.type === "het") c = `<input id="${id}" type="text" value="${esc(v)}" placeholder="入力すると候補が出ます（例 え → エクリプス）" autocomplete="off" data-ac="gene" data-gkind="het">
+    <div class="chips wrap acbox" data-acbox="${id}" hidden></div>
     <div class="seg" role="radiogroup" aria-label="hetの確率">${["100", "66", "50"].map((p, i) => `<label><input type="radio" name="${id}-pct" value="${p}"${i ? "" : " checked"}><span>${p}%</span></label>`).join("")}</div>
-    <div class="chips wrap">${recGenes().map(g => `<button type="button" class="chip" data-het="${esc(f.k)}" data-gene="${esc(g.name)}">${esc(g.name)}</button>`).join("")}<button type="button" class="chip" data-het="${esc(f.k)}" data-gene="">消す</button></div>`;
-  else if (f.type === "homo") c = `<input id="${id}" type="text" value="${esc(v)}" placeholder="例 エクリプス（見た目に出ている潜性遺伝子）" autocomplete="off">
-    <div class="chips wrap">${recGenes().map(g => `<button type="button" class="chip" data-homo="${esc(f.k)}" data-gene="${esc(g.name)}">${esc(g.name)}</button>`).join("")}<button type="button" class="chip" data-homo="${esc(f.k)}" data-gene="">消す</button></div>`;
+    ${geneButtons(f.k, "het")}`;
+  else if (f.type === "homo") c = `<input id="${id}" type="text" value="${esc(v)}" placeholder="入力すると候補が出ます（例 え → エクリプス）" autocomplete="off" data-ac="gene" data-gkind="homo">
+    <div class="chips wrap acbox" data-acbox="${id}" hidden></div>
+    ${geneButtons(f.k, "homo")}`;
   else c = `<input id="${id}" type="${f.type === "date" ? "date" : "text"}"${f.type === "number" ? ' inputmode="decimal"' : ""} value="${esc(v)}" placeholder="${esc(f.ph || "")}" autocomplete="off"${f.type === "id" ? ' autocapitalize="characters"' : ""}${f.ac ? ` data-ac="1"${f.geno?.base ? ` data-gbase="f-${esc(f.geno.base)}"` : ""}${f.geno?.homo ? ` data-ghomo="f-${esc(f.geno.homo)}"` : ""}` : ""}>${f.ac ? `<div class="chips wrap acbox" data-acbox="${id}" hidden></div>` : ""}`;
   const chips = f.chips && f.chips.length ? `<div class="chips wrap">${f.chips.map(ch => { const [val, lab] = optPair(ch); return `<button type="button" class="chip" data-fill="${esc(f.k)}" data-val="${esc(val)}"${f.append ? ' data-append="1"' : ""}>${esc(lab)}</button>`; }).join("")}</div>` : "";
   return `<div class="field" data-field="${esc(f.k)}">${f.type === "seg" ? `<label>${esc(f.label)}</label>` : `<label for="${id}">${esc(f.label)}</label>`}${c}${chips}${f.pick ? morphPicker(id) : ""}${f.hint ? `<p class="note">${esc(f.hint)}</p>` : ""}</div>`;
 }
 /* het field: pick the probability, then tap a gene to add "66%het エクリプス" (tapping the same gene replaces it) */
-function hetClick(root, e) {
-  const hb = e.target.closest("[data-homo]");
-  if (hb) {
-    /* homo field: tap a gene to add it, tap again to take it off */
-    const inp = root.querySelector("#f-" + hb.dataset.homo); if (!inp) return true;
-    const gene = hb.dataset.gene, cur = inp.value.split(/\s+/).filter(Boolean);
-    inp.value = !gene ? "" : (cur.includes(gene) ? cur.filter(x => x !== gene) : [...cur, gene]).join(" ");
+/* homo / het fields work like the morph field: the genes used most as buttons, the rest in a dropdown, and typing
+   suggests gene names. Homo: a gene once (tap again to take it off). Het: with the chosen probability ("66%het エクリプス"). */
+function topGenes(n, kind) {
+  const cnt = new Map(recGenes().map((g, i) => [g.name, -i / 100]));
+  for (const g of [...S.geckos.values(), ...(S.archive || [])]) { const t = g[kind] || ""; for (const r of recGenes()) if (t.includes(r.name)) cnt.set(r.name, cnt.get(r.name) + 1); }
+  return [...cnt.entries()].sort((a, b) => b[1] - a[1]).slice(0, n).map(e => e[0]);
+}
+function geneButtons(k, kind) {
+  const top = topGenes(6, kind), rest = recGenes().map(g => g.name).filter(n => !top.includes(n));
+  return `<div class="chips wrap">${top.map(n => `<button type="button" class="chip" data-gadd="${esc(k)}" data-gkind="${kind}" data-gene="${esc(n)}">${esc(mz(n))}</button>`).join("")}<button type="button" class="chip" data-gadd="${esc(k)}" data-gkind="${kind}" data-gene="">消す</button></div>
+    ${rest.length ? `<select class="mpick" data-genepick="${esc(k)}" data-gkind="${kind}" aria-label="ほかの遺伝子を選ぶ" style="margin-top:6px;width:100%"><option value="">ほかの遺伝子を一覧から選ぶ…</option>${rest.map(n => `<option value="${esc(n)}">${esc(mz(n))}</option>`).join("")}</select>` : ""}`;
+}
+function addGene(inp, kind, gene, pct) {
+  if (!gene) { inp.value = ""; inp.dataset.auto = "manual"; return; }
+  if (kind === "homo") {
+    const cur = inp.value.split(/\s+/).filter(Boolean);
+    inp.value = (cur.includes(gene) ? cur.filter(x => x !== gene) : [...cur, gene]).join(" ");
     inp.dataset.auto = "manual";
-    return true;
+    return;
   }
-  const b = e.target.closest("[data-het]"); if (!b) return false;
-  const inp = root.querySelector("#f-" + b.dataset.het); if (!inp) return true;
-  const gene = b.dataset.gene; if (!gene) { inp.value = ""; return true; }
-  const pct = root.querySelector(`input[name="f-${b.dataset.het}-pct"]:checked`)?.value || "100";
   const parts = inp.value.split(/\s+(?=(?:\d{1,3}%)?het\s)/).map(x => x.trim()).filter(x => x && !x.endsWith(gene));
-  parts.push((pct === "100" ? "" : pct + "%") + "het " + gene);
+  parts.push((pct && pct !== "100" ? pct + "%" : "") + "het " + gene);
   inp.value = parts.join(" ");
+}
+const hetPct = (root, k) => root.querySelector(`input[name="f-${k}-pct"]:checked`)?.value || "100";
+function hetClick(root, e) {
+  const b = e.target.closest("[data-gadd]"); if (!b) return false;
+  const inp = root.querySelector("#f-" + b.dataset.gadd); if (!inp) return true;
+  addGene(inp, b.dataset.gkind, b.dataset.gene, hetPct(root, b.dataset.gadd));
   return true;
 }
+document.addEventListener("change", e => {
+  const sel = e.target.closest?.("[data-genepick]"); if (!sel || !sel.value) return;
+  const k = sel.dataset.genepick, root = sel.closest("form, .sheet, section") || document, inp = root.querySelector("#f-" + k);
+  if (inp) addGene(inp, sel.dataset.gkind, sel.value, hetPct(root, k));
+  sel.value = "";
+});
 /* morph typeahead: while typing a morph or base morph, registered names (genes, combos, lines, traits, names already
    used) that start with what was typed appear under the field; hiragana matches katakana (た → タンジェリン) */
 const kata = s => String(s || "").replace(/[ぁ-ゖ]/g, c => String.fromCharCode(c.charCodeAt(0) + 0x60));
@@ -1492,6 +1511,10 @@ function morphWords() {
   for (const g of [...S.geckos.values(), ...(S.archive || [])]) { if (g.morph) used.add(g.morph.trim()); if (g.base) used.add(g.base.trim()); }
   const names = [...COMBOS.map(c => c.name), ...S.lines.map(l => l.name), ...GENES.flatMap(g => [g.name, g.sup]), ...POLY, ...S.lines.map(l => l.base), ...used];
   return [...new Set(names.filter(Boolean).map(n => n.normalize("NFKC").trim()))];
+}
+function suggestGene(token) {
+  const t = fold(kata(token)); if (!t) return [];
+  return recGenes().filter(g => [g.name, ...(g.al || [])].some(a => fold(a).startsWith(t) || fold(toEnglish(a)).startsWith(t))).map(g => g.name).slice(0, 8);
 }
 function suggestMorph(token) {
   const t = fold(kata(token)); if (!t) return [];
@@ -1525,7 +1548,7 @@ document.addEventListener("change", e => {
 const acToken = v => { const m = String(v).match(/(\S*)$/); return m ? m[1] : ""; };
 function showAc(inp) {
   const box = inp.parentElement.querySelector(`[data-acbox="${inp.id}"]`); if (!box) return;
-  const tok = acToken(inp.value), list = tok ? suggestMorph(tok).filter(w => w !== tok) : [];
+  const tok = acToken(inp.value), list = !tok ? [] : inp.dataset.ac === "gene" ? suggestGene(tok) : suggestMorph(tok).filter(w => w !== tok);
   box.innerHTML = list.map(w => `<button type="button" class="chip" data-acpick="${esc(w)}" data-acfor="${esc(inp.id)}">${esc(w)}${morphLang() === "en" || /^[\x00-\x7f]+$/.test(tok) ? ` <span class="muted small">${esc(toEnglish(w))}</span>` : ""}</button>`).join("");
   box.hidden = !list.length;
 }
@@ -1550,7 +1573,14 @@ document.addEventListener("pointerdown", e => { if (e.target.closest("[data-acpi
 document.addEventListener("click", e => {
   const c = e.target.closest("[data-acpick]"); if (!c) return;
   const inp = document.getElementById(c.dataset.acfor); if (!inp) return;
-  inp.value = inp.value.replace(/(\S*)$/, c.dataset.acpick) + " ";
+  if (inp.dataset.ac === "gene") {
+    /* drop what was typed (and a typed "66%het" before it, whose probability is used), then add the gene */
+    let rest = inp.value.replace(/(\S*)$/, "").trimEnd(), pct = "";
+    const m = rest.match(/(?:^|\s)(?:(\d{1,3})%)?het$/); if (m) { pct = m[1] || "100"; rest = rest.slice(0, rest.length - m[0].length).trimEnd(); }
+    inp.value = rest;
+    const root = inp.closest("form, .sheet, section") || document, k = inp.id.slice(2);
+    addGene(inp, inp.dataset.gkind, c.dataset.acpick, pct || hetPct(root, k));
+  } else inp.value = inp.value.replace(/(\S*)$/, c.dataset.acpick) + " ";
   c.parentElement.hidden = true;
   if (inp.dataset.gbase || inp.dataset.ghomo) autoGeno(inp);
   inp.focus();
@@ -2549,7 +2579,6 @@ function openRecord(raw) {
 const notFound = id => `<div class="empty">${esc(id)} は見つかりません。</div>`;
 function openGecko(id) {
   id = normId(id);
-  let armDel = "";
   const draw = async s => {
     const g = await getRec("geckos", id).catch(() => null);
     if (!g) { s.body.innerHTML = notFound(id); return; }
@@ -2575,6 +2604,7 @@ function openGecko(id) {
         <dt>モルフ</dt><dd>${esc(mz(g.morph) || "—")}${sale ? `<br><span class="muted small">${esc(morphEnOf(g))}</span>` : ""}</dd>
         ${g.base ? `<dt>ベース</dt><dd>${esc(mz(g.base))}</dd>` : ""}
         <dt>het</dt><dd>${esc(mz(g.het) || "なし")}</dd>
+        <dt>用途</dt><dd><span class="gseg" role="group" aria-label="用途">${USE_OPTS.map(([v, l]) => `<button data-guse="${v}" aria-pressed="${useOf(g) === v}" style="width:auto;padding:0 10px">${l}</button>`).join("")}</span></dd>
         <dt>評価</dt><dd><span class="gseg" role="group" aria-label="評価">${GRADES.map(x => `<button data-grade="${x}" aria-pressed="${g.grade === x}">${x}</button>`).join("")}</span></dd>
         ${g.name ? `<dt>呼び名</dt><dd>${esc(g.name)}</dd>` : ""}
         <dt>生年月日</dt><dd class="num">${esc(g.birthDate || "—")} <span class="muted small">${esc(age(g.birthDate))}</span></dd>
@@ -2595,17 +2625,18 @@ function openGecko(id) {
       ${wh.length > 1 ? `<h3 class="sec-h">体重の記録</h3><div class="hist">${wh.map(w => `<div><span>${esc(w.date)}</span><span class="mono">${esc(w.g)}g</span></div>`).join("")}</div>` : ""}
       ${logHTML(g)}
       <div class="botacts">${g.status !== "死亡" ? `<button class="btn abtn danger" data-q="dead">死亡</button>` : `<span></span>`}<button class="btn abtn" data-q="edit">編集</button></div>
-      <button class="btn block${armDel ? " danger" : ""}" data-q="delete" style="margin-top:8px">${armDel ? "もう一度押すと削除します（24時間は復活できます）" : "この個体を削除（間違えて登録したとき）"}</button>`;
+      <button class="btn block danger" data-q="delete" style="margin-top:8px">この個体を削除（間違えて登録したとき）</button>`;
     s.body.onclick = async e => {
       if (e.target.closest("[data-ask]")) return askAbout(g.id);
       const ph = e.target.closest("[data-photo]"); if (ph) return photoSheet(g.id, ph.dataset.photo);
+      const us = e.target.closest("[data-guse]");
+      if (us) { if (us.dataset.guse === useOf(g)) return; try { await updateGecko(g.id, useFlags(us.dataset.guse)); toast(g.id + " を" + USE_OPTS.find(o => o[0] === us.dataset.guse)[1] + "にしました"); draw(s); } catch (x) { toast(x.message); } return; }
       const gr = e.target.closest("[data-grade]");
       if (gr) { const v = g.grade === gr.dataset.grade ? "" : gr.dataset.grade; try { await updateGecko(g.id, { grade: v }); draw(s); } catch (x) { toast(x.message); } return; }
       const b = e.target.closest("[data-q]"); if (!b) return;
       const q = b.dataset.q;
       if (q === "delete") {
-        if (!armDel) { armDel = g.id; draw(s); return; }
-        armDel = "";
+        if (!confirm(g.id + "（" + (g.morph || "モルフ未入力") + "）を削除しますか？\n\nこの個体のペアリング・産卵（子が生まれていないもの）も一緒に削除されます。24時間以内なら「設定 → 削除したデータ」から復活できます。")) return;
         try { const r = await deleteGecko(g.id); closeSheet(s); toast(r.id + " を削除しました" + (r.with?.length ? "（ペアリング・産卵 " + r.with.length + "件も一緒に）" : "") + (r.eggBack ? "（卵は孵卵中に戻しました）" : "") + "。設定の「削除したデータ」から24時間は復活できます"); } catch (x) { toast(x.message); draw(s); }
         return;
       }
@@ -3318,7 +3349,7 @@ $("#chat-in").addEventListener("keydown", e => { if (e.key === "Enter" && (e.met
 document.addEventListener("keydown", e => { if (e.key === "Escape" && sheets.length) closeSheet(sheets[sheets.length - 1]); });
 
 /* ---------- app: budget / backup strip, settings, automatic backup, updates ---------- */
-const APP_VERSION = "2026-10-25-6";
+const APP_VERSION = "2026-10-25-7";
 const fmtGB = b => (b / 1e9).toFixed(b >= 1e10 ? 0 : 1) + "GB";
 const fmtTime = t => t ? new Date(t).toLocaleString("ja-JP", { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" }) : "まだありません";
 function setPill(el, { val, ratio, state }) {
