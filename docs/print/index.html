@@ -66,7 +66,7 @@ details summary { cursor:pointer; color:var(--sub); font-size:14px; }
       <label>濃さ <select id="density"><option>1</option><option>2</option><option>3</option><option>4</option><option>5</option></select></label>
       <label>向き <select id="dir"><option value="top">そのまま</option><option value="left">90度回す</option></select></label>
     </div>
-    <button class="btn" id="test">テスト印刷（42×20mm）</button>
+    <button class="btn" id="test">テスト印刷（50×25mm）</button>
     <p class="note">印刷が横向きや切れて出るときは「向き」を変えてください。設定はこのブラウザに保存されます。</p>
   </section>
 </main>
@@ -191,12 +191,12 @@ async function run(getJob) {
 }
 
 function testJob() {
-  const w = 336, h = 160, c = document.createElement("canvas"); c.width = w; c.height = h;
+  const w = 384, h = 200, c = document.createElement("canvas"); c.width = w; c.height = h;
   const x = c.getContext("2d");
   x.fillStyle = "#fff"; x.fillRect(0, 0, w, h);
   x.strokeStyle = "#000"; x.lineWidth = 4; x.strokeRect(2, 2, w - 4, h - 4);
   x.fillStyle = "#000"; x.font = "700 34px sans-serif"; x.textBaseline = "middle";
-  x.fillText("↑ 上", 20, 40); x.fillText("TEST 42×20", 20, 100);
+  x.fillText("↑ 上", 20, 40); x.fillText("TEST 50×25", 20, 110);
   x.beginPath(); x.moveTo(w - 50, 30); x.lineTo(w - 20, 70); x.lineTo(w - 80, 70); x.closePath(); x.fill();
   return { type: "sticker", px: [w, h], pages: [{ id: "TEST", png: c.toDataURL("image/png") }] };
 }
