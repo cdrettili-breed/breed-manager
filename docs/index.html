@@ -1460,9 +1460,9 @@ function fieldHTML(f, v) {
     <div class="chips wrap">${recGenes().map(g => `<button type="button" class="chip" data-het="${esc(f.k)}" data-gene="${esc(g.name)}">${esc(g.name)}</button>`).join("")}<button type="button" class="chip" data-het="${esc(f.k)}" data-gene="">消す</button></div>`;
   else if (f.type === "homo") c = `<input id="${id}" type="text" value="${esc(v)}" placeholder="例 エクリプス（見た目に出ている潜性遺伝子）" autocomplete="off">
     <div class="chips wrap">${recGenes().map(g => `<button type="button" class="chip" data-homo="${esc(f.k)}" data-gene="${esc(g.name)}">${esc(g.name)}</button>`).join("")}<button type="button" class="chip" data-homo="${esc(f.k)}" data-gene="">消す</button></div>`;
-  else c = `<input id="${id}" type="${f.type === "date" ? "date" : "text"}"${f.type === "number" ? ' inputmode="decimal"' : ""} value="${esc(v)}" placeholder="${esc(f.ph || "")}" autocomplete="off"${f.type === "id" ? ' autocapitalize="characters"' : ""}${f.ac ? ` data-ac="1"${f.geno ? ` data-gbase="f-${esc(f.geno.base)}" data-ghomo="f-${esc(f.geno.homo)}"` : ""}` : ""}>${f.ac ? `<div class="chips wrap acbox" data-acbox="${id}" hidden></div>` : ""}`;
+  else c = `<input id="${id}" type="${f.type === "date" ? "date" : "text"}"${f.type === "number" ? ' inputmode="decimal"' : ""} value="${esc(v)}" placeholder="${esc(f.ph || "")}" autocomplete="off"${f.type === "id" ? ' autocapitalize="characters"' : ""}${f.ac ? ` data-ac="1"${f.geno?.base ? ` data-gbase="f-${esc(f.geno.base)}"` : ""}${f.geno?.homo ? ` data-ghomo="f-${esc(f.geno.homo)}"` : ""}` : ""}>${f.ac ? `<div class="chips wrap acbox" data-acbox="${id}" hidden></div>` : ""}`;
   const chips = f.chips && f.chips.length ? `<div class="chips wrap">${f.chips.map(ch => { const [val, lab] = optPair(ch); return `<button type="button" class="chip" data-fill="${esc(f.k)}" data-val="${esc(val)}"${f.append ? ' data-append="1"' : ""}>${esc(lab)}</button>`; }).join("")}</div>` : "";
-  return `<div class="field" data-field="${esc(f.k)}">${f.type === "seg" ? `<label>${esc(f.label)}</label>` : `<label for="${id}">${esc(f.label)}</label>`}${c}${chips}${f.hint ? `<p class="note">${esc(f.hint)}</p>` : ""}</div>`;
+  return `<div class="field" data-field="${esc(f.k)}">${f.type === "seg" ? `<label>${esc(f.label)}</label>` : `<label for="${id}">${esc(f.label)}</label>`}${c}${chips}${f.pick ? morphPicker(id) : ""}${f.hint ? `<p class="note">${esc(f.hint)}</p>` : ""}</div>`;
 }
 /* het field: pick the probability, then tap a gene to add "66%het エクリプス" (tapping the same gene replaces it) */
 function hetClick(root, e) {
@@ -1499,6 +1499,29 @@ function suggestMorph(token) {
   const pre = words.filter(x => x.a.startsWith(t) || x.e.startsWith(t)), mid = words.filter(x => !pre.includes(x) && (x.a.includes(t) || x.e.includes(t)));
   return [...pre.sort((a, b) => a.w.length - b.w.length), ...mid].slice(0, 8).map(x => x.w);
 }
+/* the morphs used most (counted over the ledger), topped up from the registry when few are used yet */
+function topMorphs(n = 6) {
+  const cnt = new Map();
+  for (const g of [...S.geckos.values(), ...(S.archive || [])]) if (g.morph) { const m = g.morph.trim(); cnt.set(m, (cnt.get(m) || 0) + 1); }
+  const used = [...cnt.entries()].sort((a, b) => b[1] - a[1]).map(e => e[0]);
+  return [...new Set([...used, ...S.lines.map(l => l.name), ...COMBOS.map(c => c.name)])].slice(0, n);
+}
+/* every registered name in one dropdown, for what the buttons do not show */
+function morphPicker(id) {
+  const used = [...new Set([...S.geckos.values(), ...(S.archive || [])].map(g => (g.morph || "").trim()).filter(Boolean))].sort((a, b) => a.localeCompare(b, "ja"));
+  const grp = (label, list) => list.length ? `<optgroup label="${esc(label)}">${list.map(n => `<option value="${esc(n)}">${esc(mz(n))}</option>`).join("")}</optgroup>` : "";
+  return `<select class="mpick" data-pickfor="${id}" aria-label="モルフを一覧から選ぶ" style="margin-top:6px;width:100%">
+    <option value="">その他のモルフを一覧から選ぶ…</option>
+    ${grp("ライン", S.lines.map(l => l.name))}${grp("コンボ", COMBOS.map(c => c.name))}${grp("遺伝子", GENES.flatMap(g => g.type === "inc" ? [g.name, g.sup] : [g.name]).filter(Boolean))}${grp("形質", POLY)}${grp("これまでに使った名前", used)}
+  </select>`;
+}
+document.addEventListener("change", e => {
+  const sel = e.target.closest?.("[data-pickfor]"); if (!sel || !sel.value) return;
+  const inp = document.getElementById(sel.dataset.pickfor); if (!inp) return;
+  inp.value = sel.value; sel.value = "";
+  inp.closest(".field")?.querySelector(".acbox")?.setAttribute("hidden", "");
+  if (inp.dataset.gbase || inp.dataset.ghomo) autoGeno(inp);
+});
 const acToken = v => { const m = String(v).match(/(\S*)$/); return m ? m[1] : ""; };
 function showAc(inp) {
   const box = inp.parentElement.querySelector(`[data-acbox="${inp.id}"]`); if (!box) return;
@@ -1561,6 +1584,7 @@ function openForm({ title, fields, values = {}, submit = "保存", onSubmit, int
         const ch = e.target.closest("[data-fill]"); if (!ch) return;
         const inp = $("#f-" + ch.dataset.fill, form); if (!inp) return;
         inp.value = ch.dataset.append && inp.value.trim() ? (inp.value.includes(ch.dataset.val) ? inp.value : inp.value.trim() + " " + ch.dataset.val) : ch.dataset.val;
+        if (inp.dataset.gbase || inp.dataset.ghomo) autoGeno(inp);
       });
       form.addEventListener("submit", async e => {
         e.preventDefault(); btn.disabled = true; err.hidden = true;
@@ -1593,8 +1617,7 @@ function geckoFields(mode, cur = {}) {
   const fs = [
     { k: "use", label: "用途", type: "seg", options: USE_OPTS, def: "breeding" },
     { k: "sex", label: "性別", type: "seg", options: ["♂", "♀", "不明"], def: "不明" },
-    { k: "morph", label: "モルフ", ph: "入力すると候補が出ます（例 た → タンジェリン）", chips: frequentMorphs(), ac: true, geno: { base: "base", homo: "homo" } },
-    { k: "base", label: "ベースモルフ（遺伝の計算に使う）", ph: "モルフを入れると自動で入ります", ac: true, hint: "ラインはモルフの登録の内容が入ります。この個体だけ違うとき（このストーンウォッシュはラプター）は書き換えてください" },
+    { k: "morph", label: "モルフ", ph: "入力すると候補が出ます（例 た → タンジェリン）", chips: topMorphs(6), ac: true, pick: true, geno: { homo: "homo" } },
     { k: "homo", label: "homo（見た目に出ている潜性遺伝子）", type: "homo" },
     { k: "het", label: "het（見た目に出ない遺伝子）", type: "het" },
     { k: "birthDate", label: "生年月日", type: "date" },
@@ -2188,8 +2211,7 @@ async function hatchForm(eggId) {
       <div data-part="hatch">
         ${pred.parsedAny ? `<div class="chips wrap">${cands.map((c, j) => `<button type="button" class="chip" data-cand="${i}:${j}" aria-pressed="false">${esc(mz(c.label))}${c.plus ? " + homo " + esc(mz(c.plus)) : ""} ${pctText(c.p)}</button>`).join("")}</div>` : ""}
         ${pred.traits.length ? `<div class="chips wrap">${pred.traits.map((t, j) => `<button type="button" class="chip" data-trait="${i}:${j}">＋${esc(t)}</button>`).join("")}</div>` : ""}
-        ${fieldHTML({ k: "m-" + i, label: "モルフ", ph: "候補を選ぶか入力（入力でも候補が出ます）", ac: true, geno: { base: "b-" + i, homo: "ho-" + i } }, "")}
-        ${fieldHTML({ k: "b-" + i, label: "ベースモルフ（遺伝の計算に使う）", ph: "候補やモルフから自動で入ります", ac: true }, "")}
+        ${fieldHTML({ k: "m-" + i, label: "モルフ", ph: "候補を選ぶか入力（入力でも候補が出ます）", ac: true, geno: { homo: "ho-" + i }, pick: true }, "")}
         ${fieldHTML({ k: "ho-" + i, label: "homo（見た目に出ている潜性遺伝子）", type: "homo" }, "")}
         ${fieldHTML({ k: "het-" + i, label: "het（候補を選ぶと入ります）", type: "het" }, "")}
         ${fieldHTML({ k: "sx-" + i, label: "性別", type: "seg", options: ["♂", "♀", "不明"] }, "不明")}
@@ -2219,7 +2241,7 @@ async function hatchForm(eggId) {
       if (c) {
         const [i, j] = c.dataset.cand.split(":"), cd = cands[+j];
         for (const b of s.body.querySelectorAll(`[data-cand^="${i}:"]`)) b.setAttribute("aria-pressed", String(b === c));
-        $("#f-m-" + i, s.body).value = cd.label; $("#f-b-" + i, s.body).value = cd.base || ""; $("#f-ho-" + i, s.body).value = cd.homo || ""; $("#f-het-" + i, s.body).value = cd.hetText || ""; return;
+        $("#f-m-" + i, s.body).value = cd.label; $("#f-ho-" + i, s.body).value = cd.homo || ""; $("#f-het-" + i, s.body).value = cd.hetText || ""; return;
       }
       const tr = ev.target.closest("[data-trait]");
       if (tr) { const [i, j] = tr.dataset.trait.split(":"), t = pred.traits[+j], mi = $("#f-m-" + i, s.body); if (!mi.value.includes(t)) mi.value = (t + " " + mi.value).trim(); }
@@ -2233,7 +2255,7 @@ async function hatchForm(eggId) {
           if (done.has(x.id)) continue;
           cur = x.id; const r = val("res-" + i);
           if (r === "hatch") {
-            const h = await hatchEgg({ eggId: x.id, morph: $("#f-m-" + i, s.body).value, base: $("#f-b-" + i, s.body).value, homo: $("#f-ho-" + i, s.body).value, het: $("#f-het-" + i, s.body).value, sex: val("sx-" + i) || "不明", hatchDate: date, weight: $("#f-w-" + i, s.body).value });
+            const h = await hatchEgg({ eggId: x.id, morph: $("#f-m-" + i, s.body).value, homo: $("#f-ho-" + i, s.body).value, het: $("#f-het-" + i, s.body).value, sex: val("sx-" + i) || "不明", hatchDate: date, weight: $("#f-w-" + i, s.body).value });
             done.set(x.id, h.gecko.id); queued = queued || h.queued;
           } else if (r === "fail") { await failEgg({ eggId: x.id, reason: val("rs-" + i) || "無精卵", date }); done.set(x.id, ""); }
         }
@@ -3263,7 +3285,7 @@ $("#chat-in").addEventListener("keydown", e => { if (e.key === "Enter" && (e.met
 document.addEventListener("keydown", e => { if (e.key === "Escape" && sheets.length) closeSheet(sheets[sheets.length - 1]); });
 
 /* ---------- app: budget / backup strip, settings, automatic backup, updates ---------- */
-const APP_VERSION = "2026-10-25-3";
+const APP_VERSION = "2026-10-25-4";
 const fmtGB = b => (b / 1e9).toFixed(b >= 1e10 ? 0 : 1) + "GB";
 const fmtTime = t => t ? new Date(t).toLocaleString("ja-JP", { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" }) : "まだありません";
 function setPill(el, { val, ratio, state }) {
@@ -3481,6 +3503,8 @@ function settingsSheet(focus) {
         <p class="note" style="margin:0">「印刷」を押すと、Bluefyで印刷ページが自動で開き、ラベルが渡されます。B1とつながっていればそのまま印刷され、初回やつながっていないときは「B1とつないで印刷」を1回押します。名刺はこれまでどおりPDFです。</p>
         <p class="note" style="margin:0">はじめに: App Storeで「Bluefy」を入れておいてください。印刷ページのアドレス: <span class="mono">${esc(B1_URL)}</span></p>
         <a class="btn sm" href="${esc(bluefyLink(B1_URL))}" style="align-self:flex-start;text-decoration:none">Bluefyで印刷ページを開く（テスト印刷・設定）</a>
+        <p class="note" style="margin:0">【試験】Bluefyを開き直さずに切り替えられるか確かめます。①上のボタンでBluefyの印刷ページを開いて「B1とつないで…」でつなぐ → ②このアプリに戻って「試す X」を押す → ③Bluefyが前に出て、同じページが「接続中」のままかを見る。X・Y・Zそれぞれ結果を教えてください。</p>
+        <div class="chips wrap">${[["X", "bluefy://"], ["Y", "bluefy://open"], ["Z", bluefyLink(B1_URL)]].map(([k, u]) => `<a class="chip" href="${esc(u)}" style="text-decoration:none">試す ${k}</a>`).join("")}</div>
       </section>
       <p class="note" style="text-align:center">Breed Manager ${APP_VERSION}</p>`;
     if (focus) { const t = $("#sec-" + focus, s.body); t?.scrollIntoView({ block: "start" }); focus = ""; }
