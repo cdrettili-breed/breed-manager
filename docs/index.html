@@ -443,13 +443,25 @@ function migratePrefs() {
 }
 function toast(msg) { const t = $("#toast"); t.textContent = msg; t.hidden = false; clearTimeout(toast.t); toast.t = setTimeout(() => t.hidden = true, 2800); }
 const isDate = b => !!b && /^\d{4}-\d{2}-\d{2}$/.test(b);
-const ageMonths = b => isDate(b) ? Math.max(0, Math.floor(daysBetween(b, today()) / 30.44)) : null;
+/* birthdays may be a full date, a year and month ("2025-07") or only a year ("2025"); ages use the middle of what is known */
+const birthFull = b => !b ? "" : /^\d{4}$/.test(b) ? b + "-07-01" : /^\d{4}-\d{2}$/.test(b) ? b + "-15" : b;
+const birthText = b => !b ? "" : /^\d{4}$/.test(b) ? b + "（年のみ）" : /^\d{4}-\d{2}$/.test(b) ? b + "（日は不明）" : b;
+/* a birthday as entered: full date, year-month, year, or empty for unknown */
+function toBirth(v) {
+  if (v == null || v === "") return "";
+  const s = String(v).normalize("NFKC").trim().replace(/[/.年月]/g, "-").replace(/日$/, "").replace(/-+$/, "");
+  if (/^(不明|unknown|-)$/i.test(s)) return "";
+  const ym = s.match(/^(\d{4})-(\d{1,2})$/); if (ym) return ym[1] + "-" + pad(ym[2], 2);
+  if (/^\d{4}$/.test(s)) return s;
+  return toDate(s);
+}
+const ageMonths = b => { const f = birthFull(b); return isDate(f) ? Math.max(0, Math.floor(daysBetween(f, today()) / 30.44)) : null; };
 function age(b) {
-  if (!isDate(b)) return "";
+  const f = birthFull(b); if (!isDate(f)) return ""; const about = f !== b ? "約" : ""; b = f;
   const d = daysBetween(b, today()); if (d < 0) return "";
-  if (d < 90) return "生後" + d + "日";
-  if (d < 730) return Math.floor(d / 30.44) + "か月";
-  return Math.floor(d / 365.25) + "歳";
+  if (d < 90) return about + "生後" + d + "日";
+  if (d < 730) return about + Math.floor(d / 30.44) + "か月";
+  return about + Math.floor(d / 365.25) + "歳";
 }
 function normId(raw) {
   const s = String(raw || "").normalize("NFKC").toUpperCase().replace(/\s/g, "");
@@ -549,7 +561,8 @@ function cleanGecko(x) {
     let v = x[k];
     if (["purchasePrice", "price", "wholesalePrice", "soldPrice", "weight", "incubTemp"].includes(k)) v = toNum(v);
     else if (k === "sex") v = normSex(v);
-    else if (k === "birthDate" || k === "soldDate" || k === "deathDate") v = toDate(v);
+    else if (k === "birthDate") v = toBirth(v);
+    else if (k === "soldDate" || k === "deathDate") v = toDate(v);
     else if (["sireId", "damId", "clutchId", "eggId"].includes(k)) v = v ? normId(v) : "";
     else if (k === "breeding" || k === "forSale") v = toBool(v);
     else if (k === "grade") { v = String(v || "").trim().toUpperCase(); if (v && !GRADES.includes(v)) throw new Error("評価は A〜E です"); }
@@ -1461,6 +1474,17 @@ function fieldHTML(f, v) {
   else if (f.type === "homo") c = `<input id="${id}" type="text" value="${esc(v)}" placeholder="入力すると候補が出ます（例 え → エクリプス）" autocomplete="off" data-ac="gene" data-gkind="homo">
     <div class="chips wrap acbox" data-acbox="${id}" hidden></div>
     ${geneButtons(f.k, "homo")}`;
+  else if (f.type === "birth") {
+    /* one row of four small buttons picks how much is known; only the matching input shows */
+    /* "-" marks a recorded "unknown" (editing a gecko without a birthday); a new gecko starts on the full date */
+    const unknown = v === "-"; if (unknown) v = "";
+    const p = unknown ? "n" : !v ? "d" : /^\d{4}$/.test(v) ? "y" : /^\d{4}-\d{2}$/.test(v) ? "m" : "d", yNow = Number(today().slice(0, 4));
+    const yv = v ? String(v).slice(0, 4) : "", mv = /^\d{4}-\d{2}/.test(v) ? String(v).slice(0, 7) : "", dv = p === "d" ? v : "";
+    c = `<div class="seg" role="radiogroup" aria-label="生年月日のわかる範囲" data-birth="${id}">${[["d", "年月日"], ["m", "年月"], ["y", "年"], ["n", "不明"]].map(([k, l]) => `<label><input type="radio" name="${id}-p" value="${k}"${k === p ? " checked" : ""}><span>${l}</span></label>`).join("")}</div>
+      <input id="${id}-d" type="date" value="${esc(dv)}" aria-label="生年月日"${p === "d" ? "" : " hidden"} style="margin-top:6px">
+      <input id="${id}-m" type="month" value="${esc(mv)}" aria-label="生まれた年月"${p === "m" ? "" : " hidden"} style="margin-top:6px">
+      <select id="${id}-y" aria-label="生まれた年"${p === "y" ? "" : " hidden"} style="margin-top:6px">${Array.from({ length: 26 }, (_, i) => yNow - i).map(y => `<option value="${y}"${String(y) === yv ? " selected" : ""}>${y}年</option>`).join("")}</select>`;
+  }
   else c = `<input id="${id}" type="${f.type === "date" ? "date" : "text"}"${f.type === "number" ? ' inputmode="decimal"' : ""} value="${esc(v)}" placeholder="${esc(f.ph || "")}" autocomplete="off"${f.type === "id" ? ' autocapitalize="characters"' : ""}${f.ac ? ` data-ac="1"${f.geno?.base ? ` data-gbase="f-${esc(f.geno.base)}"` : ""}${f.geno?.homo ? ` data-ghomo="f-${esc(f.geno.homo)}"` : ""}` : ""}>${f.ac ? `<div class="chips wrap acbox" data-acbox="${id}" hidden></div>` : ""}`;
   const chips = f.chips && f.chips.length ? `<div class="chips wrap">${f.chips.map(ch => { const [val, lab] = optPair(ch); return `<button type="button" class="chip" data-fill="${esc(f.k)}" data-val="${esc(val)}"${f.append ? ' data-append="1"' : ""}>${esc(lab)}</button>`; }).join("")}</div>` : "";
   return `<div class="field" data-field="${esc(f.k)}">${f.type === "seg" ? `<label>${esc(f.label)}</label>` : `<label for="${id}">${esc(f.label)}</label>`}${c}${chips}${f.pick ? morphPicker(id) : ""}${f.hint ? `<p class="note">${esc(f.hint)}</p>` : ""}</div>`;
@@ -1570,6 +1594,15 @@ document.addEventListener("input", e => {
 });
 document.addEventListener("change", e => { if (e.target.dataset?.gbase || e.target.dataset?.ghomo) autoGeno(e.target); });
 document.addEventListener("pointerdown", e => { if (e.target.closest("[data-acpick]")) e.preventDefault(); });
+/* birthday: show the input for the chosen precision, carrying over what was already picked */
+document.addEventListener("change", e => {
+  const seg = e.target.closest?.("[data-birth]"); if (!seg || e.target.type !== "radio") return;
+  const id = seg.dataset.birth, root = seg.parentElement, p = e.target.value, el = k => root.querySelector("#" + id + "-" + k);
+  const known = el("d").value || (el("m").value ? el("m").value + "-01" : "") || (el("y").value ? el("y").value + "-01-01" : "");
+  if (p === "m" && !el("m").value && known) el("m").value = known.slice(0, 7);
+  if (p === "y" && known) el("y").value = known.slice(0, 4);
+  for (const k of ["d", "m", "y"]) el(k).hidden = k !== p;
+});
 document.addEventListener("click", e => {
   const c = e.target.closest("[data-acpick]"); if (!c) return;
   const inp = document.getElementById(c.dataset.acfor); if (!inp) return;
@@ -1588,6 +1621,7 @@ document.addEventListener("click", e => {
 function readForm(root, fields) {
   const o = {};
   for (const f of fields) {
+    if (f.type === "birth") { const p = root.querySelector(`input[name="f-${f.k}-p"]:checked`)?.value || "d"; o[f.k] = p === "n" ? "" : (root.querySelector("#f-" + f.k + "-" + p)?.value || ""); continue; }
     if (f.type === "seg") { const c = root.querySelector(`input[name="f-${f.k}"]:checked`); o[f.k] = c ? c.value : ""; }
     else { const el = root.querySelector("#f-" + f.k); o[f.k] = el ? el.value : ""; }
   }
@@ -1650,7 +1684,7 @@ function geckoFields(mode, cur = {}) {
     { k: "morph", label: "モルフ", ph: "入力すると候補が出ます（例 た → タンジェリン）", chips: topMorphs(6), ac: true, pick: true, geno: { homo: "homo" } },
     { k: "homo", label: "homo（見た目に出ている潜性遺伝子）", type: "homo" },
     { k: "het", label: "het（見た目に出ない遺伝子）", type: "het" },
-    { k: "birthDate", label: "生年月日", type: "date" },
+    { k: "birthDate", label: "生年月日", type: "birth" },
     { k: "grade", label: "評価", type: "seg", options: [["", "なし"], ...GRADES], def: "" },
     { k: "origin", label: "由来", type: "seg", options: ["自家繁殖", "購入", "その他"], def: "購入" },
     { k: "breeder", label: "ブリーダー（誰のCBか・ラベルに印刷）", ph: "例 〇〇レプタイルズ", chips: frequentBreeders(), showIf: v => v.origin !== "自家繁殖" },
@@ -1684,7 +1718,7 @@ function newGeckoForm(pre = {}) {
 function editGeckoForm(g) {
   openForm({
     title: g.id + " を編集", fields: geckoFields("edit", g), moreLabel: "父母・孵化温度・体重・英語名など",
-    values: { ...g, use: useOf(g), grade: g.grade || "", incubTemp: g.incubTemp != null ? String(g.incubTemp) : "", purchasePrice: g.purchasePrice ?? "", price: g.price ?? "", wholesalePrice: g.wholesalePrice ?? "", weight: "", origin: g.origin || "購入" },
+    values: { ...g, use: useOf(g), birthDate: g.birthDate || "-", grade: g.grade || "", incubTemp: g.incubTemp != null ? String(g.incubTemp) : "", purchasePrice: g.purchasePrice ?? "", price: g.price ?? "", wholesalePrice: g.wholesalePrice ?? "", weight: "", origin: g.origin || "購入" },
     onSubmit: async v => { const o = geckoValuesOut(v); if (o.weight === "") delete o.weight; await updateGecko(g.id, o); return "保存しました"; }
   });
 }
@@ -1921,16 +1955,16 @@ async function b1Job(list, type) {
 /* hand a prepared job to Bluefy, inside the tap: to the open print page (copy, then switch) or, the first time or
    when asked, by opening the print page with the labels in its link. false when the copy was refused. */
 function b1Go(j, fresh) {
-  if (!fresh && b1TabOpen()) {
-    let ok = true;
-    try { navigator.clipboard.writeText(j.text).catch(() => { ok = false; }); } catch { return false; }
-    lsSet("leopa.b1tab", Date.now());
-    location.href = B1_SWITCH;
-    return ok;
-  }
+  const reuse = !fresh && b1TabOpen();
   lsSet("leopa.b1tab", Date.now());
-  location.href = j.link;
-  return true;
+  if (!reuse) { location.href = j.link; return Promise.resolve(true); }
+  /* switching right away could leave the copy unfinished (iOS pauses this app), so the switch waits for it */
+  let p; try { p = navigator.clipboard.writeText(j.text); } catch (e) { p = Promise.reject(e); }
+  return p.then(() => true, () => false).then(ok => {
+    if (ok) location.href = B1_SWITCH;
+    else toast("ラベルをコピーできませんでした。「Bluefyの印刷ページを新しく開く」を使ってください");
+    return ok;
+  });
 }
 /* print without a prepared job (e.g. right after registering): draw the labels, then hand them over; when iOS no
    longer counts it as the tap, a sheet finishes it with one more tap */
@@ -2038,9 +2072,9 @@ function queueSheet(startType) {
       const act = a.dataset.qa;
       if (act === "keep") { printed = null; draw(s); return; }
       if (act === "b1go" || act === "b1fresh") {
-        /* inside the tap: the copy for the open print page, then the link itself switches to Bluefy */
-        if (act === "b1go" && b1TabOpen() && prep.j) { try { navigator.clipboard.writeText(prep.j.text).catch(() => toast("ラベルをコピーできませんでした。「新しく開いて印刷」を使ってください")); } catch {} }
-        lsSet("leopa.b1tab", Date.now());
+        /* the copy has to finish before iOS switches apps, so the switch to the open Bluefy page waits for it */
+        if (act === "b1go" && prep.j && b1TabOpen()) { e.preventDefault(); b1Go(prep.j); }
+        else lsSet("leopa.b1tab", Date.now());
         const list = prep.items; setTimeout(() => { printed = list; draw(s); }, 800); return;
       }
       a.disabled = true;
@@ -2607,7 +2641,7 @@ function openGecko(id) {
         <dt>用途</dt><dd><span class="gseg" role="group" aria-label="用途">${USE_OPTS.map(([v, l]) => `<button data-guse="${v}" aria-pressed="${useOf(g) === v}" style="width:auto;padding:0 10px">${l}</button>`).join("")}</span></dd>
         <dt>評価</dt><dd><span class="gseg" role="group" aria-label="評価">${GRADES.map(x => `<button data-grade="${x}" aria-pressed="${g.grade === x}">${x}</button>`).join("")}</span></dd>
         ${g.name ? `<dt>呼び名</dt><dd>${esc(g.name)}</dd>` : ""}
-        <dt>生年月日</dt><dd class="num">${esc(g.birthDate || "—")} <span class="muted small">${esc(age(g.birthDate))}</span></dd>
+        <dt>生年月日</dt><dd class="num">${esc(birthText(g.birthDate) || "不明")} <span class="muted small">${esc(age(g.birthDate))}</span></dd>
         <dt>孵化温度</dt><dd class="num">${g.incubTemp ? esc(g.incubTemp) + "℃" : "—"}</dd>
         <dt>由来</dt><dd>${esc(g.origin || "—")}${cbText(g) ? " · " + esc(cbText(g)) : ""}${g.purchasePrice != null ? " · 購入 " + yen(g.purchasePrice) : ""}</dd>
         <dt>父 × 母</dt><dd>${idBtn(g.sireId)} × ${idBtn(g.damId)}</dd>
@@ -2997,7 +3031,7 @@ let turns = lsGet("leopa.chat", []);
 let tier = pref("tier", "quick");
 const GECKO_PROPS = {
   sex: { type: "string", enum: ["♂", "♀", "不明"] }, morph: { type: "string" }, homo: { type: "string", description: "見た目に出ている潜性遺伝子（例 \"エクリプス\"）。スペース区切り" }, base: { type: "string", description: "遺伝の計算に使うベースモルフ（ライン個体の中身など）" }, het: { type: "string", description: "見た目に出ないhet。例 \"het トレンパーアルビノ 66%het エクリプス\"" }, morphEn: { type: "string", description: "名刺用の英語モルフ名（空なら自動変換）" },
-  birthDate: { type: "string", description: "YYYY-MM-DD。年だけなら YYYY-01-01" }, incubTemp: { type: "number" },
+  birthDate: { type: "string", description: "YYYY-MM-DD。月までなら YYYY-MM、年だけなら YYYY、不明なら空" }, incubTemp: { type: "number" },
   origin: { type: "string", enum: ["自家繁殖", "購入", "その他"] }, breeder: { type: "string", description: "自家繁殖以外: 誰の繁殖（CB）か。ラベルに〇〇 CBと印刷" }, purchasePrice: { type: "number", description: "購入した個体の購入金額（円）" },
   price: { type: "number", description: "販売価格（円）。名刺に印刷される" },
   wholesalePrice: { type: "number", description: "卸価格（円）" },
@@ -3349,7 +3383,7 @@ $("#chat-in").addEventListener("keydown", e => { if (e.key === "Enter" && (e.met
 document.addEventListener("keydown", e => { if (e.key === "Escape" && sheets.length) closeSheet(sheets[sheets.length - 1]); });
 
 /* ---------- app: budget / backup strip, settings, automatic backup, updates ---------- */
-const APP_VERSION = "2026-10-25-7";
+const APP_VERSION = "2026-10-25-8";
 const fmtGB = b => (b / 1e9).toFixed(b >= 1e10 ? 0 : 1) + "GB";
 const fmtTime = t => t ? new Date(t).toLocaleString("ja-JP", { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" }) : "まだありません";
 function setPill(el, { val, ratio, state }) {
