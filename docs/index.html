@@ -3318,7 +3318,7 @@ $("#chat-in").addEventListener("keydown", e => { if (e.key === "Enter" && (e.met
 document.addEventListener("keydown", e => { if (e.key === "Escape" && sheets.length) closeSheet(sheets[sheets.length - 1]); });
 
 /* ---------- app: budget / backup strip, settings, automatic backup, updates ---------- */
-const APP_VERSION = "2026-10-25-5";
+const APP_VERSION = "2026-10-25-6";
 const fmtGB = b => (b / 1e9).toFixed(b >= 1e10 ? 0 : 1) + "GB";
 const fmtTime = t => t ? new Date(t).toLocaleString("ja-JP", { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" }) : "まだありません";
 function setPill(el, { val, ratio, state }) {
@@ -3533,11 +3533,9 @@ function settingsSheet(focus) {
       </section>
       <section class="setsec" id="sec-printer"><h3>ラベルプリンター</h3>
         <label class="toggle"><input type="checkbox" id="st-b1" ${pref("b1", false) ? "checked" : ""}>ラベルとカップラベルをNIIMBOT B1で印刷する（Bluefy経由）</label>
-        <p class="note" style="margin:0">「印刷」を押すと、Bluefyで印刷ページが自動で開き、ラベルが渡されます。B1とつながっていればそのまま印刷され、初回やつながっていないときは「B1とつないで印刷」を1回押します。名刺はこれまでどおりPDFです。</p>
+        <p class="note" style="margin:0">「印刷」を押すとBluefyに切り替わり、B1から印刷します。最初の1回はBluefyで印刷ページが開くので「B1とつないで印刷」を押してください。2回目からは開いたままのページが前に出て、つなぎ直さずに印刷します（Bluefyのページは閉じずに置いておいてください）。名刺はこれまでどおりPDFです。</p>
         <p class="note" style="margin:0">はじめに: App Storeで「Bluefy」を入れておいてください。印刷ページのアドレス: <span class="mono">${esc(B1_URL)}</span></p>
         <a class="btn sm" href="${esc(bluefyLink(B1_URL))}" style="align-self:flex-start;text-decoration:none">Bluefyで印刷ページを開く（テスト印刷・設定）</a>
-        <p class="note" style="margin:0">【試験】Bluefyを開き直さずに切り替えられるか確かめます。①上のボタンでBluefyの印刷ページを開いて「B1とつないで…」でつなぐ → ②このアプリに戻って「試す X」を押す → ③Bluefyが前に出て、同じページが「接続中」のままかを見る。X・Y・Zそれぞれ結果を教えてください。</p>
-        <div class="chips wrap">${[["X", "bluefy://"], ["Y", "bluefy://open"], ["Z", bluefyLink(B1_URL)]].map(([k, u]) => `<a class="chip" href="${esc(u)}" style="text-decoration:none">試す ${k}</a>`).join("")}</div>
       </section>
       <p class="note" style="text-align:center">Breed Manager ${APP_VERSION}</p>`;
     if (focus) { const t = $("#sec-" + focus, s.body); t?.scrollIntoView({ block: "start" }); focus = ""; }
