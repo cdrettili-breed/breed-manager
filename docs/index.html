@@ -1807,18 +1807,20 @@ function drawQR(ctx, text, x, y, size) {
 }
 const LMONO = '"IBM Plex Mono", ui-monospace, Menlo, monospace', LJP = '"Hiragino Sans", "Hiragino Kaku Gothic ProN", "Noto Sans JP", system-ui, sans-serif';
 /* wraps at the last space when the line has one (morph words stay whole), otherwise at the character */
-function wrapLines(ctx, text, maxW, maxLines) {
+function wrapLines(ctx, text, maxW, maxLines, anyChar) {
   const lines = []; let cur = "";
   for (const ch of String(text)) {
     if (ctx.measureText(cur + ch).width > maxW && cur) {
       const sp = cur.lastIndexOf(" ");
-      if (sp > 0 && lines.length < maxLines - 1) { lines.push(cur.slice(0, sp)); cur = cur.slice(sp + 1) + (ch === " " ? "" : ch); }
-      else { lines.push(cur.trimEnd()); cur = ch === " " ? "" : ch; }
-      if (lines.length === maxLines) break;
+      if (lines.length === maxLines - 1) { lines.push(cur.trimEnd()); cur = "…"; break; }
+      /* the overflowing character is a space: the line ends right there */
+      if (ch === " ") { lines.push(cur.trimEnd()); cur = ""; }
+      else if (sp > 0 && !anyChar) { lines.push(cur.slice(0, sp)); cur = cur.slice(sp + 1) + ch; }
+      else { lines.push(cur); cur = ch; }
     } else cur += ch;
   }
   if (lines.length < maxLines && cur) lines.push(cur);
-  else if (lines.length === maxLines && cur) lines[maxLines - 1] = lines[maxLines - 1].slice(0, -1) + "…";
+  else if (lines.length === maxLines && cur.trim()) lines[maxLines - 1] = lines[maxLines - 1].slice(0, -1) + "…";
   return lines;
 }
 const dot = d => d ? d.replace(/-/g, ".") : "";
@@ -1867,13 +1869,23 @@ function drawTag(ctx, sp, x, y, w, h) {
   ty += idSize * 1.14;
   for (const r of sp.rows) {
     if (!r.t) continue;
-    const fs = Math.round(h * (r.b ? 0.155 : r.s ? 0.095 : 0.11));
+    let fs = Math.round(h * (r.b ? 0.155 : r.s ? 0.095 : 0.11));
     if (ty + fs > bottom) break;
-    ctx.font = `${r.b ? 700 : 500} ${fs}px ${LJP}`;
-    /* a line may be squeezed to 78% of its width before it wraps to the next line (or is cut with …) */
-    /* one word (no space) that fits when squeezed to 68% stays on one line instead of breaking mid-word */
-    const one = !/s/.test(r.t.trim()) && ctx.measureText(r.t).width <= tw / 0.68;
-    for (const l of one ? [r.t] : wrapLines(ctx, r.t, tw / 0.78, r.wrap || 1)) { if (ty + fs > bottom) break; ctx.fillText(l, tx, ty, tw); ty += fs * 1.1; }
+    /* a line may be squeezed to 78% of its width before it wraps to the next line; one word (no space) that fits
+       squeezed to 68% stays on one line. Text that still does not fit its lines (the morph: two) is drawn smaller,
+       down to 50%, rather than cut with … */
+    const layout = (size, anyChar) => {
+      ctx.font = `${r.b ? 700 : 500} ${size}px ${LJP}`;
+      if (!/\s/.test(r.t.trim()) && ctx.measureText(r.t).width <= tw / 0.68) return [r.t];
+      return wrapLines(ctx, r.t, tw / 0.78, r.wrap || 1, anyChar);
+    };
+    const cut = ls => ls.length && ls[ls.length - 1].endsWith("…") && !r.t.endsWith("…");
+    /* first smaller with words kept whole; only if even half size does not fit, lines may break inside a word */
+    const base = fs, min = base * 0.5;
+    let lines = layout(fs);
+    while (cut(lines) && fs > min) { fs = Math.max(min, Math.round(fs * 0.92)); lines = layout(fs); }
+    if (cut(lines)) for (fs = base, lines = layout(fs, true); cut(lines) && fs > min;) { fs = Math.max(min, Math.round(fs * 0.92)); lines = layout(fs, true); }
+    for (const l of lines) { if (ty + fs > bottom) break; ctx.fillText(l, tx, ty, tw); ty += fs * 1.1; }
   }
   ctx.restore();
 }
@@ -1906,9 +1918,12 @@ function drawCard(ctx, sp, W, H) {
   ctx.fillStyle = "#000"; ctx.textBaseline = "top";
   ctx.font = `700 150px ${LMONO}`; ctx.fillText(sp.id, pad, ty - 6, tw); ty += 168;
   if (sp.sex) { ctx.font = `700 46px ${LJP}`; ctx.fillText(sp.sex, pad, ty, tw); ty += 64; }
-  ctx.font = `700 52px ${LJP}`;
   const morphBottom = H - pad - (sp.price ? 150 : 70);
-  for (const l of wrapLines(ctx, sp.morph, tw / 0.85, 3)) { if (ty + 52 > morphBottom) break; ctx.fillText(l, pad, ty, tw); ty += 64; }
+  /* the morph gets as many of its three lines as fit; a long one is drawn smaller (down to 60%) instead of being cut */
+  let fs = 52, lines;
+  const fits = () => { ctx.font = `700 ${fs}px ${LJP}`; lines = wrapLines(ctx, sp.morph, tw / 0.85, 3); return !(lines[lines.length - 1] || "").endsWith("…") && ty + lines.length * fs * 1.23 <= morphBottom + fs * 0.23; };
+  while (!fits() && fs > 32) fs = Math.max(32, Math.round(fs * 0.92));
+  for (const l of lines) { if (ty + fs > morphBottom) break; ctx.fillText(l, pad, ty, tw); ty += fs * 1.23; }
   if (sp.price) { ctx.font = `700 64px ${LMONO}`; ctx.fillText(sp.price, pad, H - pad - 130, tw); }
   if (sp.birth) { ctx.font = `500 42px ${LMONO}`; ctx.fillText(sp.birth, pad, H - pad - 42, tw); }
   ctx.restore();
@@ -3415,7 +3430,7 @@ $("#chat-in").addEventListener("keydown", e => { if (e.key === "Enter" && (e.met
 document.addEventListener("keydown", e => { if (e.key === "Escape" && sheets.length) closeSheet(sheets[sheets.length - 1]); });
 
 /* ---------- app: budget / backup strip, settings, automatic backup, updates ---------- */
-const APP_VERSION = "2026-10-26-3";
+const APP_VERSION = "2026-10-26-4";
 const fmtGB = b => (b / 1e9).toFixed(b >= 1e10 ? 0 : 1) + "GB";
 const fmtTime = t => t ? new Date(t).toLocaleString("ja-JP", { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" }) : "まだありません";
 function setPill(el, { val, ratio, state }) {
