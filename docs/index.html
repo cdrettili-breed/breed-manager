@@ -605,6 +605,8 @@ const BASE_COMBOS = [
 let GENES = BASE_GENES, COMBOS = BASE_COMBOS;
 function applyMorphs(d) {
   GENES = d && Array.isArray(d.genes) && d.genes.length ? d.genes : BASE_GENES;
+  POLYS = d && Array.isArray(d.polys) ? d.polys : BASE_POLY.map(name => ({ name }));
+  POLY = POLYS.map(p => p.name).filter(Boolean).sort((a, b) => b.length - a.length);
   COMBOS = (d && Array.isArray(d.combos) ? d.combos : BASE_COMBOS).map(c => c.name === "ダイアブロブランコ" ? { ...c, name: "ディアブロブランコ", al: [...new Set(["ディアブロブランコ", ...(c.al || [])])] } : c);
 }
 const geneOf = k => GENES.find(g => g.k === k);
@@ -612,7 +614,9 @@ const geneOf = k => GENES.find(g => g.k === k);
 function comboOf(vis) {
   return COMBOS.filter(cb => cb.set.every(k => vis.includes(k))).sort((a, b) => b.set.length - a.set.length)[0] || null;
 }
-const POLY = ["スーパーハイポタンジェリン", "ハイポタンジェリン", "スーパーハイポ", "ハイイエロー", "タンジェリン", "ハイポ", "キャロットテール", "キャロットヘッド", "ボールドストライプ", "レッドストライプ", "リバースストライプ", "ストライプ", "ボールド", "ジャングル", "ブラッド", "サングロー", "エメリン", "ブラックナイト", "ゴースト"];
+const BASE_POLY = ["スーパーハイポタンジェリン", "ハイポタンジェリン", "スーパーハイポ", "ハイイエロー", "タンジェリン", "ハイポ", "キャロットテール", "キャロットヘッド", "ボールドストライプ", "レッドストライプ", "リバースストライプ", "ストライプ", "ボールド", "ジャングル", "ブラッド", "サングロー", "エメリン", "ブラックナイト", "ゴースト"];
+/* polygenic traits (タンジェリン, ハイポ …) are kept as names; the registry can add, rename or remove them */
+let POLYS = BASE_POLY.map(name => ({ name })), POLY = BASE_POLY;
 /* Japanese → English morph names for the business card */
 const EN = [
   ["スーパーハイポタンジェリン", "Super Hypo Tangerine"], ["ハイポタンジェリン", "Hypo Tangerine"], ["スーパーマックスノー", "Super Mack Snow"], ["スーパーマックスノウ", "Super Mack Snow"], ["スーパースノー", "Super Snow"],
@@ -634,11 +638,12 @@ function toEnglish(text) {
 /* English names set in the morph registry come first, then the built-in table; rebuilt only when the registry changes */
 let enCache = null;
 function enTerms() {
-  if (enCache && enCache.l === S.lines && enCache.g === GENES && enCache.c === COMBOS) return enCache.terms;
+  if (enCache && enCache.l === S.lines && enCache.g === GENES && enCache.c === COMBOS && enCache.p === POLYS) return enCache.terms;
   const reg = [...GENES.flatMap(g => g.en ? [[g.name, g.en], ...(g.al || []).map(a => [a, g.en]), ...(g.sup && g.sen ? [[g.sup, g.sen]] : [])] : []),
-    ...COMBOS.flatMap(c => c.en ? [[c.name, c.en], ...(c.al || []).map(a => [a, c.en])] : [])];
+    ...COMBOS.flatMap(c => c.en ? [[c.name, c.en], ...(c.al || []).map(a => [a, c.en])] : []),
+    ...POLYS.flatMap(p => p.en ? [[p.name, p.en], ...(p.al || []).map(a => [a, p.en])] : [])];
   const terms = [...S.lines.map(l => [l.name, l.en || l.name]), ...reg, ...EN].filter(([jp]) => jp && /[^\x00-\x7f]/.test(jp)).sort((a, b) => b[0].length - a[0].length);
-  enCache = { l: S.lines, g: GENES, c: COMBOS, terms };
+  enCache = { l: S.lines, g: GENES, c: COMBOS, p: POLYS, terms };
   return terms;
 }
 const morphEnOf = g => (g.morphEn || "").trim() || toEnglish(g.morph);
@@ -667,19 +672,21 @@ function parseMorph(text, lines = S.lines) {
     while ((idx = s.indexOf(t.a)) >= 0) {
       const before = s.slice(0, idx);
       const hm = before.match(/(?:(\d{1,3})\s*%\s*|(ポッシブル|ポシブル|possible|pos\.?)\s*)?het\s*$/);
+      /* "homo X": two copies, for any kind of gene (homo エニグマ, homo マックスノー = スーパー) */
+      const om = !hm && before.match(/homo\s*$/);
       let start = idx;
-      if (hm) start = idx - hm[0].length;
+      if (hm) start = idx - hm[0].length; else if (om) start = idx - om[0].length;
       s = s.slice(0, start) + " " + s.slice(idx + t.a.length);
       if (t.combo) { for (const k of t.combo.set) { const [kk, c] = k.split(":"); setG(kk, c ? +c : 2); } continue; }
       const g = t.g;
-      if (t.sup) setG(g.k, 2);
+      if (t.sup || om) setG(g.k, 2);
       else if (g.type === "rec") {
         if (hm) { const p = hm[1] ? Math.min(100, +hm[1]) / 100 : hm[2] ? 0.5 : 1; setG(g.k, 1, p); }
         else setG(g.k, 2);
       } else setG(g.k, 1);
     }
   }
-  for (const p of POLY) { const a = fold(p); if (s.includes(a)) { traits.push(p); s = s.split(a).join(" "); } }
+  for (const [w, name] of POLYS.flatMap(p => [p.name, ...(p.al || [])].filter(Boolean).map(w => [w, p.name])).sort((a, b) => b[0].length - a[0].length)) { const a = fold(w); if (a && s.includes(a)) { if (!traits.includes(name)) traits.push(name); s = s.split(a).join(" "); } }
   const unknown = s.replace(/\b(het|normal)\b|ノーマル|ポッシブル|ポシブル|\d+%/g, " ").split(/\s+/).filter(w => w && w.length > 1);
   return { genes, traits, unknown, lines: found };
 }
@@ -729,7 +736,8 @@ function predictMorphs(damMorph, sireMorph, damLines, sireLines) {
     const base = ln && ln.both ? named(gr.vis).join(" ") : "";
     const hets = Object.entries(gr.het).map(([k, hp]) => ({ name: nameOf(k), p: hp / gr.p })).filter(h => h.p > 0.001).sort((a, b) => b.p - a.p);
     const hetText = hets.map(h => (h.p > 0.995 ? "" : Math.round(h.p * 100) + "%") + "het " + h.name).join(" ");
-    const homo = gr.vis.filter(v => geneOf(v)?.type === "rec").map(nameOf).join(" ");
+    /* homo lists the genes the child has two copies of: visible recessives and supers (msnow:2 → マックスノー) */
+    const homo = gr.vis.filter(v => v.endsWith(":2") || geneOf(v)?.type === "rec").map(v => geneOf(v.split(":")[0])?.name || v).join(" ");
     const plus = ln && ln.both ? gr.vis.filter(v => !ln.keys.includes(v) && geneOf(v.split(":")[0])?.type === "rec").map(nameOf).join(" ") : "";
     return { p: gr.p, label, base, homo, plus, morph: ((label === "ノーマル" && !hetText) ? "ノーマル" : label + " " + hetText).trim(), hetText, combo: "" };
   }).sort((a, b) => b.p - a.p).filter(c => c.p > 0.001);
@@ -739,7 +747,8 @@ function predictMorphs(damMorph, sireMorph, damLines, sireLines) {
 /* what the genetics read for a gecko: the morph plus its het field. A gecko's own base morph replaces its line's
    registered base (this ストーンウォッシュ is ラプター), or is read alongside the morph when the morph is not a line. */
 const lineIn = g => S.lines.filter(l => fold(g.morph).includes(fold(l.name)));
-const genoOf = g => g ? [g.base && !lineIn(g).length ? g.base : "", g.morph, g.homo, g.het].filter(Boolean).join(" ") : "";
+const homoWords = t => String(t || "").split(/\s+/).filter(Boolean).map(n => "homo " + n).join(" ");
+const genoOf = g => g ? [g.base && !lineIn(g).length ? g.base : "", g.morph, homoWords(g.homo), g.het].filter(Boolean).join(" ") : "";
 const linesOf = g => g && g.base ? S.lines.map(l => fold(g.morph).includes(fold(l.name)) ? { ...l, base: g.base } : l) : S.lines;
 const predictFor = (dam, sire) => predictMorphs(genoOf(dam), genoOf(sire), linesOf(dam), linesOf(sire));
 const pctText = p => (p * 100).toFixed(p < 0.1 ? 1 : 0) + "%";
@@ -749,6 +758,8 @@ function oddsHTML(pred, n = 6) {
 }
 /* genes offered on the het buttons (a gene can be kept off them, e.g. マーブルアイ, and is still read when typed) */
 const recGenes = () => GENES.filter(g => g.type === "rec" && g.het !== false);
+/* genes offered for homo / het: every kind (a dominant or co-dominant gene can be one or two copies too) */
+const hhGenes = () => GENES.filter(g => g.het !== false);
 /* names offered for a gecko's base morph: combos first, then genes */
 const baseChips = () => [...COMBOS.map(c => c.name), ...GENES.map(g => g.type === "inc" ? [g.name, g.sup] : [g.name]).flat()].filter(Boolean);
 /* who bred it: other breeders are entered on the gecko, our own CB uses the breeder name in settings */
@@ -1206,19 +1217,35 @@ async function setLine(name, base, en) {
   return { name, base };
 }
 /* ---------- morph registry: base genes, combo morphs and lines, all edited in one place ---------- */
-const GENE_TYPES = [["rec", "劣性（hetあり）"], ["inc", "共優性（スーパーあり）"], ["dom", "優性"]];
+const GENE_TYPES = [["rec", "劣性（hetあり）"], ["inc", "共優性（スーパーあり）"], ["dom", "優性"], ["poly", "ポリジェネ（形質）"]];
 const splitNames = t => String(t || "").normalize("NFKC").split(/[、,，\/／]/).map(x => x.trim()).filter(Boolean);
-async function saveMorphs(genes, combos) {
-  await saveMeta("morphs", { genes, combos }); applyMorphs({ genes, combos }); schedule();
+async function saveMorphs(genes, combos, polys = POLYS) {
+  await saveMeta("morphs", { genes, combos, polys }); applyMorphs({ genes, combos, polys }); schedule();
 }
 const nameTaken = (name, skip) => {
   const f = fold(name);
   if (GENES.some(g => g !== skip && [g.name, g.sup, ...(g.al || []), ...(g.sal || [])].some(a => a && fold(a) === f))) return "遺伝子";
   if (COMBOS.some(c => c !== skip && [c.name, ...(c.al || [])].some(a => fold(a) === f))) return "コンボ";
   if (S.lines.some(l => l !== skip && fold(l.name) === f)) return "ライン";
+  if (POLYS.some(p => p !== skip && fold(p.name) === f)) return "ポリジェネ";
   return "";
 };
-async function saveGene(old, v) {
+/* a polygenic trait: a name (and English name / other names) read as a trait, not as a gene with a way of inheriting.
+   oldGene is set when a gene is turned into a trait, oldPoly when a trait is edited */
+async function savePoly(oldGene, oldPoly, v) {
+  const name = String(v.name || "").normalize("NFKC").trim(); if (!name) throw new Error("名前を入力してください");
+  const t = nameTaken(name, oldPoly || oldGene); if (t) throw new Error(name + " はすでに" + t + "として登録されています");
+  if (oldGene) { const used = COMBOS.filter(c => c.set.some(k => k.split(":")[0] === oldGene.k)).map(c => c.name); if (used.length) throw new Error(oldGene.name + " はコンボ（" + used.join("・") + "）で使っています。先にコンボから外してください"); }
+  const en = String(v.en || "").trim(), al = splitNames(v.al).filter(a => a !== name);
+  const p = { name, ...(en ? { en } : {}), ...(al.length ? { al } : {}) };
+  await saveMorphs(oldGene ? GENES.filter(x => x !== oldGene) : GENES, COMBOS, oldPoly ? POLYS.map(x => x === oldPoly ? p : x) : [...POLYS, p]);
+  return p;
+}
+async function deletePoly(p) { await saveMorphs(GENES, COMBOS, POLYS.filter(x => x !== p)); }
+async function saveGene(old, v, oldPoly) {
+  if ((v.type || "rec") === "poly") return savePoly(old, oldPoly, v);
+  /* a trait turned into a gene leaves the trait list */
+  if (oldPoly) { await saveMorphs(GENES, COMBOS, POLYS.filter(x => x !== oldPoly)); }
   const name = String(v.name || "").normalize("NFKC").trim(); if (!name) throw new Error("名前を入力してください");
   const t = nameTaken(name, old); if (t) throw new Error(name + " はすでに" + t + "として登録されています");
   const type = v.type || "rec", al = [...new Set([name, ...splitNames(v.al)])];
@@ -1277,29 +1304,29 @@ const geneText = k => { const [kk, n] = k.split(":"), g = geneOf(kk); return !g 
 function morphSheet(startTab) {
   let tab = startTab || "line", armed = "", enNote = "";
   const draw = s => {
-    const rows = tab === "gene" ? GENES.map((g, i) => ({ i, name: g.name + " / " + toEnglish(g.name) + (g.enAuto ? "（自動）" : ""), sub: GENE_TYPES.find(t => t[0] === g.type)?.[1] + (g.type === "inc" ? " · " + (g.sup || "") : "") + (g.het === false ? " · hetの候補に出さない" : "") }))
+    const rows = tab === "gene" ? GENES.map((g, i) => ({ i, name: g.name + " / " + toEnglish(g.name) + (g.enAuto ? "（自動）" : ""), sub: GENE_TYPES.find(t => t[0] === g.type)?.[1] + (g.type === "inc" ? " · " + (g.sup || "") : "") + (g.het === false ? " · hetの候補に出さない" : "") })).concat(POLYS.map((p, i) => ({ i: "p" + i, name: p.name + " / " + toEnglish(p.name) + (p.enAuto ? "（自動）" : ""), sub: "ポリジェネ（形質）" + (p.al?.length ? " · 別名 " + p.al.join("・") : "") })))
       : tab === "combo" ? COMBOS.map((c, i) => ({ i, name: c.name + " / " + toEnglish(c.name) + (c.enAuto ? "（自動）" : ""), sub: "= " + c.set.map(k => mz(geneText(k))).join(" + ") }))
       : S.lines.map((l, i) => ({ i, name: l.name + " / " + (l.en ? l.en + (l.enAuto ? "（自動）" : "") : "英語名なし"), sub: "= " + mz(l.base) }));
     const help = { line: "ライン名はそのまま表示し、遺伝の計算だけ元のモルフで行います。同じライン同士の子はライン名、ラインと他の子は元のモルフ名で候補に出ます。個体ごとに中身が違うとき（このストーンウォッシュはラプター）は、個体の「ベースモルフ」に入れます。",
       combo: "中身の遺伝子がそろうと、子の候補にコンボ名で出ます。個体のモルフにコンボ名を書くと、中身の遺伝子として計算します。",
-      gene: "遺伝子の名前と遺伝の仕方です。劣性の遺伝子はhetの候補に出ます。" }[tab];
+      gene: "遺伝子の名前と遺伝の仕方、ポリジェネ（タンジェリンなどの形質）です。遺伝子はhomo・hetの候補に出ます。ポリジェネは子の候補で「親の形質を追加」に出ます。" }[tab];
     s.body.innerHTML = `
       <div class="qtabs" role="group" aria-label="種類">${[["line", "ライン"], ["combo", "コンボ"], ["gene", "ベース"]].map(([k, l]) => `<button data-mt="${k}" aria-pressed="${k === tab}">${l}</button>`).join("")}</div>
       <p class="note">${esc(help)}</p>
       <p class="note" style="margin:0">英語名がないものは、保存したときにClaudeが自動で英語名を入れます（「（自動）」の印）。違っていたら「変更」で直してください。${enNote}</p>
-      <button class="btn primary block" data-madd>＋ ${tab === "line" ? "ライン" : tab === "combo" ? "コンボ" : "遺伝子"}を追加</button>
+      <button class="btn primary block" data-madd>＋ ${tab === "line" ? "ライン" : tab === "combo" ? "コンボ" : "遺伝子・ポリジェネ"}を追加</button>
       <div class="list" style="margin-top:12px">${rows.map(r => `<div class="row r3"><span class="rid">${esc(r.name)}</span><span class="rmain"><span class="rsub" style="white-space:normal">${esc(r.sub)}</span></span><span style="display:flex;gap:6px"><button class="btn sm" data-medit="${r.i}">変更</button><button class="btn sm${armed === tab + r.i ? " danger" : ""}" data-mdel="${r.i}">${armed === tab + r.i ? "もう一度で削除" : "削除"}</button></span></div>`).join("") || `<div class="empty">まだありません。</div>`}</div>
       ${tab === "gene" && GENES !== BASE_GENES ? `<button class="btn sm" data-mreset style="margin-top:10px">遺伝子を最初の内容に戻す</button>` : ""}`;
   };
-  const geneForm = g => openForm({ title: g ? g.name + " を変更" : "遺伝子を追加", submit: "保存",
+  const geneForm = (g, poly) => openForm({ title: g || poly ? (g || poly).name + " を変更" : "遺伝子・ポリジェネを追加", submit: "保存",
     fields: [{ k: "name", label: "名前" }, { k: "type", label: "遺伝の仕方", type: "seg", options: GENE_TYPES, def: "rec" },
       { k: "sup", label: "スーパー体の名前", ph: "空欄なら「スーパー＋名前」", showIf: v => v.type === "inc" },
       { k: "het", label: "hetの候補", type: "seg", options: [["yes", "出す"], ["no", "出さない"]], def: "yes", showIf: v => v.type === "rec" },
       { k: "en", label: "英語名", ph: toEnglish(g?.name || "") || "例 Tremper" },
       { k: "sen", label: "スーパー体の英語名", ph: toEnglish(g?.sup || "") || "例 Super Mack Snow", showIf: v => v.type === "inc" },
       { k: "al", label: "別名（読点で区切る）", ph: "例 トレンパーアルビノ、tremper" }],
-    values: g ? { name: g.name, type: g.type, sup: g.sup || "", het: g.het === false ? "no" : "yes", en: g.en || "", sen: g.sen || "", al: (g.al || []).filter(a => a !== g.name).join("、") } : {},
-    onSubmit: async v => { const r = await saveGene(g, v); laterEn(); return r.name + " を保存しました"; } });
+    values: poly ? { name: poly.name, type: "poly", en: poly.en || "", al: (poly.al || []).join("、") } : g ? { name: g.name, type: g.type, sup: g.sup || "", het: g.het === false ? "no" : "yes", en: g.en || "", sen: g.sen || "", al: (g.al || []).filter(a => a !== g.name).join("、") } : {},
+    onSubmit: async v => { const r = await saveGene(g, v, poly); laterEn(); return r.name + " を保存しました"; } });
   const comboForm = c => openForm({ title: c ? c.name + " を変更" : "コンボを追加", submit: "保存",
     fields: [{ k: "name", label: "コンボ名", ph: "例 ラプター" },
       { k: "parts", label: "中身の遺伝子", ph: "下からタップ（例 トレンパー エクリプス）", chips: GENES.map(g => g.type === "inc" ? [g.name, g.sup] : [g.name]).flat().filter(Boolean), append: true },
@@ -1326,14 +1353,14 @@ function morphSheet(startTab) {
       const t = e.target.closest("[data-mt]"); if (t) { tab = t.dataset.mt; armed = ""; draw(s); return; }
       if (e.target.closest("[data-madd]")) return tab === "gene" ? geneForm(null) : tab === "combo" ? comboForm(null) : lineForm(null);
       const ed = e.target.closest("[data-medit]");
-      if (ed) { const i = +ed.dataset.medit; return tab === "gene" ? geneForm(GENES[i]) : tab === "combo" ? comboForm(COMBOS[i]) : lineForm(S.lines[i]); }
+      if (ed) { const r = ed.dataset.medit, i = +String(r).replace(/^p/, ""); return tab === "gene" ? (String(r).startsWith("p") ? geneForm(null, POLYS[i]) : geneForm(GENES[i])) : tab === "combo" ? comboForm(COMBOS[i]) : lineForm(S.lines[i]); }
       const del = e.target.closest("[data-mdel]");
       if (del) {
-        const i = +del.dataset.mdel;
-        if (armed !== tab + i) { armed = tab + i; draw(s); return; }
+        const r = del.dataset.mdel, i = +String(r).replace(/^p/, ""), isPoly = String(r).startsWith("p");
+        if (armed !== tab + r) { armed = tab + r; draw(s); return; }
         armed = "";
         try {
-          if (tab === "gene") await deleteGene(GENES[i]); else if (tab === "combo") await deleteCombo(COMBOS[i]); else await setLine(S.lines[i].name, "");
+          if (tab === "gene") await (isPoly ? deletePoly(POLYS[i]) : deleteGene(GENES[i])); else if (tab === "combo") await deleteCombo(COMBOS[i]); else await setLine(S.lines[i].name, "");
           toast("削除しました");
         } catch (x) { toast(x.message); }
         draw(s); return;
@@ -1493,12 +1520,12 @@ function fieldHTML(f, v) {
 /* homo / het fields work like the morph field: the genes used most as buttons, the rest in a dropdown, and typing
    suggests gene names. Homo: a gene once (tap again to take it off). Het: with the chosen probability ("66%het エクリプス"). */
 function topGenes(n, kind) {
-  const cnt = new Map(recGenes().map((g, i) => [g.name, -i / 100]));
-  for (const g of [...S.geckos.values(), ...(S.archive || [])]) { const t = g[kind] || ""; for (const r of recGenes()) if (t.includes(r.name)) cnt.set(r.name, cnt.get(r.name) + 1); }
+  const cnt = new Map(hhGenes().map((g, i) => [g.name, -i / 100]));
+  for (const g of [...S.geckos.values(), ...(S.archive || [])]) { const t = g[kind] || ""; for (const r of hhGenes()) if (t.includes(r.name)) cnt.set(r.name, cnt.get(r.name) + 1); }
   return [...cnt.entries()].sort((a, b) => b[1] - a[1]).slice(0, n).map(e => e[0]);
 }
 function geneButtons(k, kind) {
-  const top = topGenes(6, kind), rest = recGenes().map(g => g.name).filter(n => !top.includes(n));
+  const top = topGenes(6, kind), rest = hhGenes().map(g => g.name).filter(n => !top.includes(n));
   return `<div class="chips wrap">${top.map(n => `<button type="button" class="chip" data-gadd="${esc(k)}" data-gkind="${kind}" data-gene="${esc(n)}">${esc(mz(n))}</button>`).join("")}<button type="button" class="chip" data-gadd="${esc(k)}" data-gkind="${kind}" data-gene="">消す</button></div>
     ${rest.length ? `<select class="mpick" data-genepick="${esc(k)}" data-gkind="${kind}" aria-label="ほかの遺伝子を選ぶ" style="margin-top:6px;width:100%"><option value="">ほかの遺伝子を一覧から選ぶ…</option>${rest.map(n => `<option value="${esc(n)}">${esc(mz(n))}</option>`).join("")}</select>` : ""}`;
 }
@@ -1538,7 +1565,7 @@ function morphWords() {
 }
 function suggestGene(token) {
   const t = fold(kata(token)); if (!t) return [];
-  return recGenes().filter(g => [g.name, ...(g.al || [])].some(a => fold(a).startsWith(t) || fold(toEnglish(a)).startsWith(t))).map(g => g.name).slice(0, 8);
+  return hhGenes().filter(g => [g.name, ...(g.al || [])].some(a => fold(a).startsWith(t) || fold(toEnglish(a)).startsWith(t))).map(g => g.name).slice(0, 8);
 }
 function suggestMorph(token) {
   const t = fold(kata(token)); if (!t) return [];
@@ -1565,7 +1592,8 @@ function morphPicker(id) {
 document.addEventListener("change", e => {
   const sel = e.target.closest?.("[data-pickfor]"); if (!sel || !sel.value) return;
   const inp = document.getElementById(sel.dataset.pickfor); if (!inp) return;
-  inp.value = sel.value; sel.value = "";
+  /* added to what is there, so morphs combine (タンジェリン ＋ ラプター) */
+  inp.value = inp.value.trim().split(/\s+/).includes(sel.value) ? inp.value.trim() : (inp.value.trim() ? inp.value.trim() + " " : "") + sel.value; sel.value = "";
   inp.closest(".field")?.querySelector(".acbox")?.setAttribute("hidden", "");
   if (inp.dataset.gbase || inp.dataset.ghomo) autoGeno(inp);
 });
@@ -1583,7 +1611,7 @@ function autoGeno(inp) {
   const b = inp.dataset.gbase && root.querySelector("#" + inp.dataset.gbase), h = inp.dataset.ghomo && root.querySelector("#" + inp.dataset.ghomo);
   const morph = inp.value.trim(), ln = S.lines.filter(l => fold(morph).includes(fold(l.name)));
   const base = ln.length ? ln.map(l => l.base).join(" ") : "";
-  const homo = Object.entries(parseMorph(morph).genes).filter(([k, st]) => geneOf(k)?.type === "rec" && st.c === 2).map(([k]) => geneOf(k).name).join(" ");
+  const homo = Object.entries(parseMorph(morph).genes).filter(([k, st]) => geneOf(k) && st.c === 2).map(([k]) => geneOf(k).name).join(" ");
   const put = (el, v) => { if (el && (el.value === "" || el.value === el.dataset.auto)) { el.value = v; el.dataset.auto = v; } };
   put(b, base); put(h, homo);
 }
@@ -1647,7 +1675,7 @@ function openForm({ title, fields, values = {}, submit = "保存", onSubmit, int
         if (hetClick(form, e)) return;
         const ch = e.target.closest("[data-fill]"); if (!ch) return;
         const inp = $("#f-" + ch.dataset.fill, form); if (!inp) return;
-        inp.value = ch.dataset.append && inp.value.trim() ? (inp.value.includes(ch.dataset.val) ? inp.value : inp.value.trim() + " " + ch.dataset.val) : ch.dataset.val;
+        inp.value = !ch.dataset.val ? "" : ch.dataset.append && inp.value.trim() ? (inp.value.split(/\s+/).includes(ch.dataset.val) ? inp.value : inp.value.trim() + " " + ch.dataset.val) : ch.dataset.val;
         if (inp.dataset.gbase || inp.dataset.ghomo) autoGeno(inp);
       });
       form.addEventListener("submit", async e => {
@@ -1681,7 +1709,7 @@ function geckoFields(mode, cur = {}) {
   const fs = [
     { k: "use", label: "用途", type: "seg", options: USE_OPTS, def: "breeding" },
     { k: "sex", label: "性別", type: "seg", options: ["♂", "♀", "不明"], def: "不明" },
-    { k: "morph", label: "モルフ", ph: "入力すると候補が出ます（例 た → タンジェリン）", chips: topMorphs(6), ac: true, pick: true, geno: { homo: "homo" } },
+    { k: "morph", label: "モルフ", ph: "入力すると候補が出ます（例 た → タンジェリン）", chips: [...topMorphs(6), ["", "消す"]], append: true, ac: true, pick: true, geno: { homo: "homo" }, hint: "候補はいくつでも組み合わせられます（例 タンジェリン ＋ ラプター）" },
     { k: "homo", label: "homo（見た目に出ている潜性遺伝子）", type: "homo" },
     { k: "het", label: "het（見た目に出ない遺伝子）", type: "het" },
     { k: "birthDate", label: "生年月日", type: "birth" },
@@ -3383,7 +3411,7 @@ $("#chat-in").addEventListener("keydown", e => { if (e.key === "Enter" && (e.met
 document.addEventListener("keydown", e => { if (e.key === "Escape" && sheets.length) closeSheet(sheets[sheets.length - 1]); });
 
 /* ---------- app: budget / backup strip, settings, automatic backup, updates ---------- */
-const APP_VERSION = "2026-10-25-8";
+const APP_VERSION = "2026-10-26-1";
 const fmtGB = b => (b / 1e9).toFixed(b >= 1e10 ? 0 : 1) + "GB";
 const fmtTime = t => t ? new Date(t).toLocaleString("ja-JP", { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" }) : "まだありません";
 function setPill(el, { val, ratio, state }) {
