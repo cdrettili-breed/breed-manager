@@ -659,7 +659,8 @@ function parseMorph(text, lines = S.lines) {
   for (const ln of [...(lines || [])].sort((a, b) => b.name.length - a.name.length)) {
     const a = fold(ln.name); if (!a || !s.includes(a)) continue;
     s = s.split(a).join(" "); found.push(ln);
-    const sub = parseMorph(ln.base, []);
+    /* a line stands for its base morph plus the hets registered with it */
+    const sub = parseMorph([ln.base, ln.het].filter(Boolean).join(" "), []);
     for (const [k, st] of Object.entries(sub.genes)) setG(k, st.c, st.p);
     traits.push(...sub.traits);
   }
@@ -1205,13 +1206,14 @@ async function removePhoto(geckoId, assetId) {
   await listsUpsert(g2);
   if (S.assets) await S.assets.delete(assetId).catch(e => console.warn("asset delete", e));
 }
-async function setLine(name, base, en) {
+async function setLine(name, base, en, het) {
   name = String(name || "").normalize("NFKC").trim(); base = String(base || "").trim();
   if (!name) throw new Error("ライン名を入力してください");
   if (GENES.some(g => g.al.some(a => fold(a) === fold(name)))) throw new Error(name + " は遺伝子名なのでラインとしては登録できません");
   const old = S.lines.find(l => fold(l.name) === fold(name));
   const items = S.lines.filter(l => fold(l.name) !== fold(name));
-  if (base) items.push({ name, base, en: String(en ?? old?.en ?? "").trim() });
+  const h = String(het ?? old?.het ?? "").trim();
+  if (base) items.push({ name, base, en: String(en ?? old?.en ?? "").trim(), ...(h ? { het: h } : {}) });
   items.sort((a, b) => a.name.localeCompare(b.name, "ja"));
   await saveMeta("lines", { items }); S.lines = items; schedule();
   return { name, base };
@@ -1306,7 +1308,7 @@ function morphSheet(startTab) {
   const draw = s => {
     const rows = tab === "gene" ? GENES.map((g, i) => ({ i, name: g.name + " / " + toEnglish(g.name) + (g.enAuto ? "（自動）" : ""), sub: GENE_TYPES.find(t => t[0] === g.type)?.[1] + (g.type === "inc" ? " · " + (g.sup || "") : "") + (g.het === false ? " · hetの候補に出さない" : "") })).concat(POLYS.map((p, i) => ({ i: "p" + i, name: p.name + " / " + toEnglish(p.name) + (p.enAuto ? "（自動）" : ""), sub: "ポリジェネ（形質）" + (p.al?.length ? " · 別名 " + p.al.join("・") : "") })))
       : tab === "combo" ? COMBOS.map((c, i) => ({ i, name: c.name + " / " + toEnglish(c.name) + (c.enAuto ? "（自動）" : ""), sub: "= " + c.set.map(k => mz(geneText(k))).join(" + ") }))
-      : S.lines.map((l, i) => ({ i, name: l.name + " / " + (l.en ? l.en + (l.enAuto ? "（自動）" : "") : "英語名なし"), sub: "= " + mz(l.base) }));
+      : S.lines.map((l, i) => ({ i, name: l.name + " / " + (l.en ? l.en + (l.enAuto ? "（自動）" : "") : "英語名なし"), sub: "= " + mz(l.base) + (l.het ? " · " + mz(l.het) : "") }));
     const help = { line: "ライン名はそのまま表示し、遺伝の計算だけ元のモルフで行います。同じライン同士の子はライン名、ラインと他の子は元のモルフ名で候補に出ます。個体ごとに中身が違うとき（このストーンウォッシュはラプター）は、個体の「ベースモルフ」に入れます。",
       combo: "中身の遺伝子がそろうと、子の候補にコンボ名で出ます。個体のモルフにコンボ名を書くと、中身の遺伝子として計算します。",
       gene: "遺伝子の名前と遺伝の仕方、ポリジェネ（タンジェリンなどの形質）です。遺伝子はhomo・hetの候補に出ます。ポリジェネは子の候補で「親の形質を追加」に出ます。" }[tab];
@@ -1337,13 +1339,14 @@ function morphSheet(startTab) {
   const lineForm = l => openForm({ title: l ? l.name + " を変更" : "ラインを追加", submit: "保存",
     fields: [{ k: "name", label: "ライン名", ph: "例 ストーンウォッシュ" },
       { k: "base", label: "元のモルフ（計算に使う）", ph: "例 タンジェリン トレンパー", chips: baseChips(), append: true },
+      { k: "het", label: "het（このラインが持っている見た目に出ない遺伝子・任意）", type: "het" },
       { k: "en", label: "英語名（名刺用・任意）", ph: "例 Stonewash" }],
-    values: l ? { name: l.name, base: l.base, en: l.en || "" } : {},
+    values: l ? { name: l.name, base: l.base, het: l.het || "", en: l.en || "" } : {},
     onSubmit: async v => {
       if (!String(v.base || "").trim()) throw new Error("元のモルフを入れてください");
       if (!l || fold(l.name) !== fold(v.name)) { const t = nameTaken(v.name, l); if (t) throw new Error(v.name + " はすでに" + t + "として登録されています"); }
       if (l && fold(l.name) !== fold(v.name)) await setLine(l.name, "");
-      const r = await setLine(v.name, v.base, v.en); laterEn(); return r.name + " を保存しました";
+      const r = await setLine(v.name, v.base, v.en, v.het); laterEn(); return r.name + " を保存しました";
     } });
   openSheet({ title: "モルフの登録", render: s => {
     draw(s);
@@ -3182,11 +3185,11 @@ function makeTools(log, status) {
       inputSchema: { type: "object", properties: { id: { type: "string" } }, required: ["id"] },
       execute: wrap("削除しています", async i => { const list = stockViews().filter(v => v.id !== i.id); await saveViews(list); done("在庫の表示を削除", null); return { remaining: list.map(v => v.title) }; }) },
     { name: "set_line_morph", description: "ライン名をベースモルフ（遺伝子名）に紐づけて保存する。例: ストーンウォッシュ → トレンパーアルビノ。en は名刺用の英語名。base を空にすると削除。",
-      inputSchema: { type: "object", properties: { name: { type: "string" }, base: { type: "string" }, en: { type: "string" } }, required: ["name"] },
+      inputSchema: { type: "object", properties: { name: { type: "string" }, base: { type: "string" }, en: { type: "string" }, het: { type: "string", description: "このラインが持つhet（例 \"het エクリプス\"）" } }, required: ["name"] },
       execute: wrap("ラインを保存しています", async i => {
         let base = i.base; if (base === undefined) base = S.lines.find(l => fold(l.name) === fold(i.name))?.base || "";
         if (base && !Object.keys(parseMorph(base, []).genes).length) throw new Error("ベースモルフから遺伝子を読み取れません: " + base);
-        const r = await setLine(i.name, base, i.en); done("ライン " + r.name + (r.base ? " = " + r.base : " を削除"), null); return { lines: S.lines };
+        const r = await setLine(i.name, base, i.en, i.het); done("ライン " + r.name + (r.base ? " = " + r.base : " を削除"), null); return { lines: S.lines };
       }) },
     { name: "save_attached_photo", description: "チャットに添付された写真（[添付N: 写真 …] の N）を、個体の写真として保存する。",
       inputSchema: { type: "object", properties: { gecko_id: { type: "string" }, attachment: { type: "number", description: "添付の番号 N" } }, required: ["gecko_id", "attachment"] },
@@ -3411,7 +3414,7 @@ $("#chat-in").addEventListener("keydown", e => { if (e.key === "Enter" && (e.met
 document.addEventListener("keydown", e => { if (e.key === "Escape" && sheets.length) closeSheet(sheets[sheets.length - 1]); });
 
 /* ---------- app: budget / backup strip, settings, automatic backup, updates ---------- */
-const APP_VERSION = "2026-10-26-1";
+const APP_VERSION = "2026-10-26-2";
 const fmtGB = b => (b / 1e9).toFixed(b >= 1e10 ? 0 : 1) + "GB";
 const fmtTime = t => t ? new Date(t).toLocaleString("ja-JP", { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" }) : "まだありません";
 function setPill(el, { val, ratio, state }) {
