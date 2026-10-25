@@ -1338,7 +1338,7 @@ function morphSheet(startTab) {
     onSubmit: async v => { const r = await saveCombo(c, v); laterEn(); return r.name + " を保存しました"; } });
   const lineForm = l => openForm({ title: l ? l.name + " を変更" : "ラインを追加", submit: "保存",
     fields: [{ k: "name", label: "ライン名", ph: "例 ストーンウォッシュ" },
-      { k: "base", label: "元のモルフ（計算に使う）", ph: "例 タンジェリン トレンパー", chips: baseChips(), append: true },
+      { k: "base", label: "元のモルフ（計算に使う）", ph: "入力すると候補が出ます（例 タンジェリン トレンパー）", chips: [...COMBOS.slice(0, 4).map(c => c.name), ...hhGenes().filter(g => g.type === "rec").slice(0, 4).map(g => g.name), ["", "消す"]], append: true, ac: true, pick: "base", hint: "ベース（遺伝子）・コンボ・ポリジェネを組み合わせられます" },
       { k: "het", label: "het（このラインが持っている見た目に出ない遺伝子・任意）", type: "het" },
       { k: "en", label: "英語名（名刺用・任意）", ph: "例 Stonewash" }],
     values: l ? { name: l.name, base: l.base, het: l.het || "", en: l.en || "" } : {},
@@ -1517,7 +1517,7 @@ function fieldHTML(f, v) {
   }
   else c = `<input id="${id}" type="${f.type === "date" ? "date" : "text"}"${f.type === "number" ? ' inputmode="decimal"' : ""} value="${esc(v)}" placeholder="${esc(f.ph || "")}" autocomplete="off"${f.type === "id" ? ' autocapitalize="characters"' : ""}${f.ac ? ` data-ac="1"${f.geno?.base ? ` data-gbase="f-${esc(f.geno.base)}"` : ""}${f.geno?.homo ? ` data-ghomo="f-${esc(f.geno.homo)}"` : ""}` : ""}>${f.ac ? `<div class="chips wrap acbox" data-acbox="${id}" hidden></div>` : ""}`;
   const chips = f.chips && f.chips.length ? `<div class="chips wrap">${f.chips.map(ch => { const [val, lab] = optPair(ch); return `<button type="button" class="chip" data-fill="${esc(f.k)}" data-val="${esc(val)}"${f.append ? ' data-append="1"' : ""}>${esc(lab)}</button>`; }).join("")}</div>` : "";
-  return `<div class="field" data-field="${esc(f.k)}">${f.type === "seg" ? `<label>${esc(f.label)}</label>` : `<label for="${id}">${esc(f.label)}</label>`}${c}${chips}${f.pick ? morphPicker(id) : ""}${f.hint ? `<p class="note">${esc(f.hint)}</p>` : ""}</div>`;
+  return `<div class="field" data-field="${esc(f.k)}">${f.type === "seg" ? `<label>${esc(f.label)}</label>` : `<label for="${id}">${esc(f.label)}</label>`}${c}${chips}${f.pick ? morphPicker(id, f.pick) : ""}${f.hint ? `<p class="note">${esc(f.hint)}</p>` : ""}</div>`;
 }
 /* het field: pick the probability, then tap a gene to add "66%het エクリプス" (tapping the same gene replaces it) */
 /* homo / het fields work like the morph field: the genes used most as buttons, the rest in a dropdown, and typing
@@ -1584,12 +1584,13 @@ function topMorphs(n = 6) {
   return [...new Set([...used, ...S.lines.map(l => l.name), ...COMBOS.map(c => c.name)])].slice(0, n);
 }
 /* every registered name in one dropdown, for what the buttons do not show */
-function morphPicker(id) {
+/* kind "base" (a line's base morph) offers only the registered genes, combos and traits */
+function morphPicker(id, kind) {
   const used = [...new Set([...S.geckos.values(), ...(S.archive || [])].map(g => (g.morph || "").trim()).filter(Boolean))].sort((a, b) => a.localeCompare(b, "ja"));
   const grp = (label, list) => list.length ? `<optgroup label="${esc(label)}">${list.map(n => `<option value="${esc(n)}">${esc(mz(n))}</option>`).join("")}</optgroup>` : "";
   return `<select class="mpick" data-pickfor="${id}" aria-label="モルフを一覧から選ぶ" style="margin-top:6px;width:100%">
-    <option value="">その他のモルフを一覧から選ぶ…</option>
-    ${grp("ライン", S.lines.map(l => l.name))}${grp("コンボ", COMBOS.map(c => c.name))}${grp("遺伝子", GENES.flatMap(g => g.type === "inc" ? [g.name, g.sup] : [g.name]).filter(Boolean))}${grp("形質", POLY)}${grp("これまでに使った名前", used)}
+    <option value="">${kind === "base" ? "登録されているベース・コンボから選ぶ…" : "その他のモルフを一覧から選ぶ…"}</option>
+    ${kind === "base" ? "" : grp("ライン", S.lines.map(l => l.name))}${grp("コンボ", COMBOS.map(c => c.name))}${grp(kind === "base" ? "ベース（遺伝子）" : "遺伝子", GENES.flatMap(g => g.type === "inc" ? [g.name, g.sup] : [g.name]).filter(Boolean))}${grp(kind === "base" ? "ポリジェネ" : "形質", POLY)}${kind === "base" ? "" : grp("これまでに使った名前", used)}
   </select>`;
 }
 document.addEventListener("change", e => {
@@ -3414,7 +3415,7 @@ $("#chat-in").addEventListener("keydown", e => { if (e.key === "Enter" && (e.met
 document.addEventListener("keydown", e => { if (e.key === "Escape" && sheets.length) closeSheet(sheets[sheets.length - 1]); });
 
 /* ---------- app: budget / backup strip, settings, automatic backup, updates ---------- */
-const APP_VERSION = "2026-10-26-2";
+const APP_VERSION = "2026-10-26-3";
 const fmtGB = b => (b / 1e9).toFixed(b >= 1e10 ? 0 : 1) + "GB";
 const fmtTime = t => t ? new Date(t).toLocaleString("ja-JP", { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" }) : "まだありません";
 function setPill(el, { val, ratio, state }) {
