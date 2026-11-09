@@ -419,6 +419,7 @@ const nowTs = () => new Date().toISOString();
 const addDays = (s, n) => { const d = new Date(s + "T00:00:00"); d.setDate(d.getDate() + n); return iso(d); };
 const daysBetween = (a, b) => Math.round((new Date(b + "T00:00:00") - new Date(a + "T00:00:00")) / 864e5);
 const yen = n => (n == null || n === "" || Number.isNaN(Number(n))) ? "—" : "¥" + Number(n).toLocaleString("ja-JP");
+const num = n => yen(n).replace("¥", "");
 const md = s => s ? s.slice(5).replace("-", "/") : "—";
 const yy = d => String(d || today()).slice(2, 4);
 const lsGet = (k, d) => { try { const v = localStorage.getItem(k); return v == null ? d : JSON.parse(v); } catch { return d; } };
@@ -2169,12 +2170,12 @@ const cardSpec = g => {
   /* own-bred is a 〇 (in the card's own 自家繁殖 blank; "自家繁殖 〇" where the card has no labels), otherwise where it came from */
   const own = g.origin === "自家繁殖", origin = own ? (en ? "Home bred 〇" : "自家繁殖 〇") : (g.locality || "").trim();
   const raw = { id: g.id, sex, morph: [names.join(" / "), hetOf(g)].filter(Boolean).join(" "), sire: pm(sire), sireHet: sire ? hetOf(sire) : "", dam: pm(dam), damHet: dam ? hetOf(dam) : "",
-    birth, origin: own ? "〇" : origin, price: g.price != null ? yen(g.price) + (c.priceNote ? " " + c.priceNote : "") : "" };
+    birth, origin: own ? "〇" : origin, price: g.price != null ? num(g.price) + (c.priceNote ? " " + c.priceNote : "") : "" };
   /* a parent line: "♂ Tangerine Raptor  het Eclipse" with whichever parts are switched on */
   const parent = (sym, m, h, onM, onH) => { const t = [onM && m, onH && h].filter(Boolean).join("  "); return t ? sym + " " + t : ""; };
   return { id: it.id ? g.id : "", qid: g.id, sex: it.sex ? sex : "", morph,
     sire: parent(en ? "Sire" : "父", raw.sire, raw.sireHet, it.sire, it.sireHet), dam: parent(en ? "Dam" : "母", raw.dam, raw.damHet, it.dam, it.damHet),
-    price: it.price && g.price != null ? yen(g.price) : "",
+    price: it.price && g.price != null ? num(g.price) : "",
     birth: it.birth && birth ? (en ? "Birth " : "生年月日 ") + birth : "",
     origin: it.origin ? origin : "",
     /* bare values for writing into the blanks of a pre-printed card (its own labels say what each is) */
@@ -2209,7 +2210,7 @@ function drawOverlay(ctx, sp, W, H) {
       if (t) {
         /* the value fills its box: one line as large as the height allows, two lines when the box is tall and the text long */
         const mono = ["id", "price", "birth"].includes(k), font = s => `${k === "id" || k === "morph" || k === "price" ? 700 : 500} ${s}px ${mono ? LMONO : LJP}`;
-        const full = Math.round(h * 0.78);
+        const maru = t === "〇", full = Math.round(h * (maru ? 1.05 : 0.78));
         ctx.font = font(full);
         /* one line: as big as the height allows, smaller if it is too wide (lines may still be squeezed to 80%) */
         let fs = Math.max(8, Math.min(full, Math.floor(full * (w / 0.8) / ctx.measureText(t).width))), lines = [t];
@@ -2217,7 +2218,11 @@ function drawOverlay(ctx, sp, W, H) {
         const two = Math.round(h * 0.42);
         if (fs < two) { ctx.font = font(two); const l2 = wrapLines(ctx, t, w / 0.8, 2); if (l2.length === 2 && !l2[1].endsWith("…")) { fs = two; lines = l2; } }
         ctx.font = font(fs);
-        lines.forEach((l, i) => ctx.fillText(l, x, y + h / 2 + (i - (lines.length - 1) / 2) * fs * 1.12, w));
+        /* the morph sits in the middle of its blank, the own-bred 〇 at the right end (next to the card's 産地) */
+        const align = k === "morph" ? "center" : maru ? "right" : "left", ax = align === "center" ? x + w / 2 : align === "right" ? x + w : x;
+        ctx.textAlign = align;
+        lines.forEach((l, i) => ctx.fillText(l, ax, y + h / 2 + (i - (lines.length - 1) / 2) * fs * 1.12, w));
+        ctx.textAlign = "left";
       } else if (ovlPreview) {
         /* nothing to write for the sample gecko: the item's name in grey, so the box can still be placed */
         ctx.save(); ctx.fillStyle = "rgba(0,0,0,.35)"; ctx.font = `500 ${Math.round(Math.min(h * 0.6, W * 0.04))}px ${LJP}`; ctx.fillText(label, x + W * 0.005, y + h / 2, w); ctx.restore();
@@ -4041,7 +4046,7 @@ $("#chat-in").addEventListener("keydown", e => { if (e.key === "Enter" && (e.met
 document.addEventListener("keydown", e => { if (e.key === "Escape" && sheets.length) closeSheet(sheets[sheets.length - 1]); });
 
 /* ---------- app: budget / backup strip, settings, automatic backup, updates ---------- */
-const APP_VERSION = "2026-11-09-18";
+const APP_VERSION = "2026-11-09-19";
 const fmtGB = b => (b / 1e9).toFixed(b >= 1e10 ? 0 : 1) + "GB";
 const fmtTime = t => t ? new Date(t).toLocaleString("ja-JP", { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" }) : "まだありません";
 function setPill(el, { val, ratio, state }) {
