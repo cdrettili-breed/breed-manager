@@ -2181,26 +2181,43 @@ function drawOverlay(ctx, sp, W, H) {
   if (ovlPreview) { const bg = ovlBgImg(); if (bg) ctx.drawImage(bg, 0, 0, W, H); }
   const boxes = ovlBoxes(), raw = sp.raw || {};
   ctx.fillStyle = "#000"; ctx.textBaseline = "middle";
-  for (const [k] of OVL_FIELDS) {
-    const b = boxes[k]; if (!b.on) continue;
+  for (const [k, label] of OVL_FIELDS) {
+    /* on screen the chosen item always shows its box, even while switched off or empty */
+    const b = boxes[k], sel = !!ovlPreview && ovlPreview.sel === k; if (!b.on && !sel) continue;
     const x = b.x * W, y = b.y * H, w = b.w * W, h = b.h * H;
-    if (k === "qr") { const s = Math.min(w, h); drawQR(ctx, qrText(sp.qid || raw.id), x + (w - s) / 2, y + (h - s) / 2, s); }
+    if (!b.on) {}
+    else if (k === "qr") { const s = Math.min(w, h); drawQR(ctx, qrText(sp.qid || raw.id), x + (w - s) / 2, y + (h - s) / 2, s); }
     else {
       /* a card with one blank per parent gets the parent's het in that blank too */
-      const t = (k === "sire" || k === "dam") && !boxes[k + "Het"].on ? [raw[k], raw[k + "Het"]].filter(Boolean).join("  ") : raw[k]; if (!t) continue;
-      /* the value fills its box: one line as large as the height allows, two lines when the box is tall and the text long */
-      const mono = ["id", "price", "birth"].includes(k), font = s => `${k === "id" || k === "morph" || k === "price" ? 700 : 500} ${s}px ${mono ? LMONO : LJP}`;
-      const full = Math.round(h * 0.78);
-      ctx.font = font(full);
-      /* one line: as big as the height allows, smaller if it is too wide (lines may still be squeezed to 80%) */
-      let fs = Math.max(8, Math.min(full, Math.floor(full * (w / 0.8) / ctx.measureText(t).width))), lines = [t];
-      /* two lines when that gives bigger text */
-      const two = Math.round(h * 0.42);
-      if (fs < two) { ctx.font = font(two); const l2 = wrapLines(ctx, t, w / 0.8, 2); if (l2.length === 2 && !l2[1].endsWith("…")) { fs = two; lines = l2; } }
-      ctx.font = font(fs);
-      lines.forEach((l, i) => ctx.fillText(l, x, y + h / 2 + (i - (lines.length - 1) / 2) * fs * 1.12, w));
+      const t = (k === "sire" || k === "dam") && !boxes[k + "Het"].on ? [raw[k], raw[k + "Het"]].filter(Boolean).join("  ") : raw[k];
+      if (t) {
+        /* the value fills its box: one line as large as the height allows, two lines when the box is tall and the text long */
+        const mono = ["id", "price", "birth"].includes(k), font = s => `${k === "id" || k === "morph" || k === "price" ? 700 : 500} ${s}px ${mono ? LMONO : LJP}`;
+        const full = Math.round(h * 0.78);
+        ctx.font = font(full);
+        /* one line: as big as the height allows, smaller if it is too wide (lines may still be squeezed to 80%) */
+        let fs = Math.max(8, Math.min(full, Math.floor(full * (w / 0.8) / ctx.measureText(t).width))), lines = [t];
+        /* two lines when that gives bigger text */
+        const two = Math.round(h * 0.42);
+        if (fs < two) { ctx.font = font(two); const l2 = wrapLines(ctx, t, w / 0.8, 2); if (l2.length === 2 && !l2[1].endsWith("…")) { fs = two; lines = l2; } }
+        ctx.font = font(fs);
+        lines.forEach((l, i) => ctx.fillText(l, x, y + h / 2 + (i - (lines.length - 1) / 2) * fs * 1.12, w));
+      } else if (ovlPreview) {
+        /* nothing to write for the sample gecko: the item's name in grey, so the box can still be placed */
+        ctx.save(); ctx.fillStyle = "rgba(0,0,0,.35)"; ctx.font = `500 ${Math.round(Math.min(h * 0.6, W * 0.04))}px ${LJP}`; ctx.fillText(label, x + W * 0.005, y + h / 2, w); ctx.restore();
+      }
     }
-    if (ovlPreview) { ctx.save(); ctx.strokeStyle = ovlPreview.sel === k ? "#e5532d" : "rgba(54,169,222,.8)"; ctx.lineWidth = Math.max(2, W / 300) * (ovlPreview.sel === k ? 2 : 1); ctx.setLineDash(ovlPreview.sel === k ? [] : [8, 6]); ctx.strokeRect(x, y, w, h); ctx.restore(); }
+    if (ovlPreview) {
+      ctx.save(); ctx.strokeStyle = sel ? "#e5532d" : "rgba(54,169,222,.8)"; ctx.lineWidth = Math.max(2, W / 300) * (sel ? 2 : 1);
+      ctx.setLineDash(sel && b.on ? [] : [8, 6]); if (sel) { ctx.fillStyle = "rgba(229,83,45,.12)"; ctx.fillRect(x, y, w, h); } ctx.strokeRect(x, y, w, h);
+      if (sel) {
+        /* a tag with the item's name on the chosen box */
+        const fs = Math.round(W * 0.03), tag = label + (b.on ? "" : "（オフ）"); ctx.font = `700 ${fs}px ${LJP}`;
+        const tw = ctx.measureText(tag).width + fs * 0.8, th = fs * 1.5, ty = y - th >= 0 ? y - th : Math.min(H - th, y + h);
+        ctx.fillStyle = "#e5532d"; ctx.fillRect(x, ty, tw, th); ctx.fillStyle = "#fff"; ctx.textBaseline = "middle"; ctx.fillText(tag, x + fs * 0.4, ty + th / 2);
+      }
+      ctx.restore();
+    }
   }
   ctx.restore();
 }
@@ -2339,7 +2356,7 @@ function cardSettingsSheet() {
     const seg = (name, opts, val) => `<div class="seg" role="radiogroup">${opts.map(([v, l]) => `<label><input type="radio" name="${name}" value="${v}"${v === val ? " checked" : ""}><span>${l}</span></label>`).join("")}</div>`;
     s.body.innerHTML = `
       ${seg("c-mode", [["design", "自分でデザイン"], ["overlay", "印刷済みのカードに書き込む"]], ov ? "overlay" : "design")}
-      <div style="max-width:420px;margin:10px auto 0"><div id="card-prev"></div><p class="note" style="text-align:center;margin:6px 0 0" id="card-size"></p></div>
+      <div style="max-width:420px;margin:10px auto 0;${ov ? "position:sticky;top:0;z-index:3;background:var(--bg);padding:6px 0" : ""}"><div id="card-prev"></div><p class="note" style="text-align:center;margin:6px 0 0" id="card-size"></p></div>
       ${ov ? `
       <div class="infobox" style="margin-top:10px"><b>空のプライスカードに合わせる</b><br><span class="small">何も書いていないカードを真上から撮って選ぶと、Claudeが空欄の位置を読み取って、各項目をそこに合わせます（APIキーを使います）。</span><div style="margin-top:8px"><button type="button" class="btn primary" data-c="blank">空のカードの写真から合わせる</button></div><input type="file" id="c-blank" accept="image/*" hidden><p class="note" id="c-ai-msg" style="margin:6px 0 0"></p></div>
       <div class="form" style="margin-top:12px">
@@ -2433,7 +2450,7 @@ function cardSettingsSheet() {
     s.body.addEventListener("pointerdown", e => {
       const cv = e.target.closest("#card-prev canvas"); if (!cv || !overlay()) return;
       const { fx, fy } = at(e, cv), boxes = ovlBoxes();
-      const hit = [sel, ...OVL_FIELDS.map(f => f[0])].find(k => boxes[k].on && fx >= boxes[k].x && fx <= boxes[k].x + boxes[k].w && fy >= boxes[k].y && fy <= boxes[k].y + boxes[k].h);
+      const hit = [sel, ...OVL_FIELDS.map(f => f[0])].find(k => (boxes[k].on || k === sel) && fx >= boxes[k].x && fx <= boxes[k].x + boxes[k].w && fy >= boxes[k].y && fy <= boxes[k].y + boxes[k].h);
       if (!hit) return;
       e.preventDefault();
       const changed = hit !== sel; sel = hit;
@@ -4004,7 +4021,7 @@ $("#chat-in").addEventListener("keydown", e => { if (e.key === "Enter" && (e.met
 document.addEventListener("keydown", e => { if (e.key === "Escape" && sheets.length) closeSheet(sheets[sheets.length - 1]); });
 
 /* ---------- app: budget / backup strip, settings, automatic backup, updates ---------- */
-const APP_VERSION = "2026-11-09-13";
+const APP_VERSION = "2026-11-09-14";
 const fmtGB = b => (b / 1e9).toFixed(b >= 1e10 ? 0 : 1) + "GB";
 const fmtTime = t => t ? new Date(t).toLocaleString("ja-JP", { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" }) : "まだありません";
 function setPill(el, { val, ratio, state }) {
