@@ -3514,7 +3514,7 @@ $("#chat-in").addEventListener("keydown", e => { if (e.key === "Enter" && (e.met
 document.addEventListener("keydown", e => { if (e.key === "Escape" && sheets.length) closeSheet(sheets[sheets.length - 1]); });
 
 /* ---------- app: budget / backup strip, settings, automatic backup, updates ---------- */
-const APP_VERSION = "2026-11-09-3";
+const APP_VERSION = "2026-11-09-4";
 const fmtGB = b => (b / 1e9).toFixed(b >= 1e10 ? 0 : 1) + "GB";
 const fmtTime = t => t ? new Date(t).toLocaleString("ja-JP", { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" }) : "まだありません";
 function setPill(el, { val, ratio, state }) {
@@ -3630,26 +3630,29 @@ function notifySection() {
       <p class="note" style="margin:0">ホーム画面のアプリ（iOS 16.4以降）で使えます。時刻は1時間ほど遅れることがあります。</p>`}
   </section>`;
 }
-/* a temperature plan: start temperature, a change on day N, and optionally a second change */
-function tempPlanForm() {
-  const opts = tempOptions().map(t => [t, t + "℃"]);
-  openForm({ title: "温度変化を追加", submit: "保存",
-    fields: [{ k: "t", label: "最初の温度", type: "seg", options: opts, def: opts[opts.length - 1]?.[0] },
-      { k: "d1", label: "温度を変える日（産卵から何日目）", type: "number", ph: "例 25", chips: ["14", "21", "25", "30", "35"] },
-      { k: "t1", label: "変えたあとの温度", type: "seg", options: opts, def: opts[0]?.[0] },
-      { k: "d2", label: "もう一度変える日（任意）", type: "number", ph: "例 40", adv: true },
-      { k: "t2", label: "2回目に変えたあとの温度", type: "seg", options: [["", "なし"], ...opts], def: "", adv: true }],
-    moreLabel: "2回目の温度変化（必要なときだけ）",
+/* a temperature plan of up to three temperatures: ① from laying, ② from day N, ③ from day M (optional).
+   old: the plan being edited */
+function tempPlanForm(old) {
+  const opts = tempOptions().map(t => [t, t + "℃"]), steps = old ? planOf(old) : [];
+  openForm({ title: old ? "温度変化を変更" : "温度変化を追加", submit: "保存",
+    intro: `<p class="note" style="margin:0 0 10px">産卵した日を1日目として、温度を最大3つまで決められます。③は使わなければ「なし」のままで大丈夫です。</p>`,
+    fields: [{ k: "t", label: "① 最初の温度（産卵日から）", type: "seg", options: opts, def: opts[opts.length - 1]?.[0] },
+      { k: "d1", label: "② に変える日（産卵から何日目）", type: "number", ph: "例 25", chips: ["14", "21", "25", "30", "35"] },
+      { k: "t1", label: "② の温度", type: "seg", options: opts, def: opts[0]?.[0] },
+      { k: "d2", label: "③ に変える日（任意）", type: "number", ph: "例 40", chips: ["35", "40", "45"], showIf: v => !!v.t2 },
+      { k: "t2", label: "③ の温度（任意）", type: "seg", options: [["", "なし"], ...opts], def: "" }],
+    values: old ? { t: String(old.t), d1: steps[0] ? String(steps[0].day) : "", t1: steps[0] ? String(steps[0].t) : "", d2: steps[1] ? String(steps[1].day) : "", t2: steps[1] ? String(steps[1].t) : "" } : {},
     onSubmit: async v => {
       const t = toNum(v.t), d1 = Math.round(toNum(v.d1) || 0), t1 = toNum(v.t1), d2 = Math.round(toNum(v.d2) || 0), t2 = toNum(v.t2);
-      if (!t || !t1) throw new Error("温度を選んでください");
-      if (d1 < 1 || d1 > 80) throw new Error("温度を変える日を1〜80の数字で入れてください");
-      if (t1 === t) throw new Error("変えたあとの温度が最初と同じです");
+      if (!t || !t1) throw new Error("①と②の温度を選んでください");
+      if (d1 < 1 || d1 > 80) throw new Error("②に変える日を1〜80の数字で入れてください");
+      if (t1 === t) throw new Error("②の温度が①と同じです");
       const plan = [{ day: d1, t: t1 }];
-      if (d2 || t2) { if (!(d2 > d1) || !t2) throw new Error("2回目は、1回目より後の日と温度を入れてください"); plan.push({ day: d2, t: t2 }); }
-      const p = { id: "tp" + Date.now().toString(36), t, plan };
-      if (tempPlans().some(x => x.t === t && JSON.stringify(planOf(x)) === JSON.stringify(plan))) throw new Error("同じ温度変化がすでにあります");
-      const next = [...tempPlans(), p];
+      if (t2) { if (!(d2 > d1) || d2 > 90) throw new Error("③に変える日は、②より後の日を入れてください"); if (t2 === t1) throw new Error("③の温度が②と同じです"); plan.push({ day: d2, t: t2 }); }
+      const others = tempPlans().filter(x => !old || x.id !== old.id);
+      if (others.some(x => x.t === t && JSON.stringify(planOf(x)) === JSON.stringify(plan))) throw new Error("同じ温度変化がすでにあります");
+      const p = { id: old ? old.id : "tp" + Date.now().toString(36), t, plan };
+      const next = old ? tempPlans().map(x => x.id === old.id ? p : x) : [...tempPlans(), p];
       await saveMeta("settings", { tempPlans: next }); S.settings.tempPlans = next; schedule();
       return planText(t, plan) + "（孵化まで約" + planDays(t, plan) + "日）を保存しました";
     } });
@@ -3723,9 +3726,9 @@ function settingsSheet(focus) {
           <div class="chips wrap">${tempOptions().map(t => `<button class="chip" data-sx="trm" data-t="${esc(t)}" aria-label="${esc(t)}℃を外す">${esc(t)}℃ ×</button>`).join("")}</div>
           <div class="idrow"><input id="st-temp" inputmode="decimal" placeholder="例 30" autocomplete="off" aria-label="追加する温度"><button class="btn" data-sx="tadd">追加</button></div></div>
         <div class="field"><label>温度変化（途中で温度を変えるパターン）</label>
-          ${tempPlans().length ? `<div class="list">${tempPlans().map(p => `<div class="row r3"><span class="rid">${esc(shortPlan(p.t, p.plan))}</span><span class="rmain"><span class="rsub" style="white-space:normal">${esc(planText(p.t, p.plan))} · 孵化まで約${planDays(toNum(p.t), planOf(p))}日</span></span><button class="btn sm" data-sx="pdel" data-id="${esc(p.id)}">削除</button></div>`).join("")}</div>` : `<p class="note" style="margin:0">まだありません。</p>`}
+          ${tempPlans().length ? `<div class="list">${tempPlans().map(p => `<div class="row r3"><span class="rid">${esc(shortPlan(p.t, p.plan))}</span><span class="rmain"><span class="rsub" style="white-space:normal">${planOf(p).map(s => s.day + "日目").join("・")}に変更 · 約${planDays(toNum(p.t), planOf(p))}日</span></span><span style="display:flex;gap:6px"><button class="btn sm" data-sx="pedit" data-id="${esc(p.id)}">変更</button><button class="btn sm" data-sx="pdel" data-id="${esc(p.id)}">削除</button></span></div>`).join("")}</div>` : `<p class="note" style="margin:0">まだありません。</p>`}
           <button class="btn" data-sx="padd" style="align-self:flex-start;margin-top:6px">＋ 温度変化を追加</button>
-          <p class="note" style="margin:0">例: 31.5℃で始めて25日目に28.5℃。孵化予定日は温度変化も含めて計算します。登録した温度変化は、産卵の記録と卵の「温度・メモ」で選べます。</p></div>
+          <p class="note" style="margin:0">温度は3つまで決められます（例: ①31.5℃ → ②25日目から28.5℃ → ③40日目から30℃）。孵化予定日は温度変化も含めて計算します。登録した温度変化は、産卵の記録と卵の「温度・メモ」で選べます。</p></div>
       </section>
       <section class="setsec" id="sec-printer"><h3>ラベルプリンター</h3>
         <label class="toggle"><input type="checkbox" id="st-b1" ${pref("b1", false) ? "checked" : ""}>ラベルとカップラベルをNIIMBOT B1で印刷する（Bluefy経由）</label>
@@ -3791,6 +3794,7 @@ function settingsSheet(focus) {
         }
         else if (a === "pdel") { const next = tempPlans().filter(p => p.id !== b.dataset.id); await saveMeta("settings", { tempPlans: next }); S.settings.tempPlans = next; toast("温度変化を削除しました"); }
         else if (a === "padd") { tempPlanForm(); return; }
+        else if (a === "pedit") { const p = tempPlans().find(x => x.id === b.dataset.id); if (p) tempPlanForm(p); return; }
         else if (a === "own") { const v = $("#st-own", s.body).value.trim(); await saveMeta("settings", { ownBreeder: v }); S.settings.ownBreeder = v; toast(v ? "自家繁殖の個体に「" + v + " CB」と表示します" : "自家繁殖のCBは表示しません"); }
         else if (a === "b1url") { await navigator.clipboard.writeText(B1_URL); toast("アドレスをコピーしました。Bluefyに貼り付けて開いてください"); return; }
         else if (a === "unlink") { await BM.backup.unlink(); toast("Dropboxとのつなぎを外しました"); }
