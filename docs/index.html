@@ -1752,6 +1752,11 @@ const frequentBreeders = (n = 6) => {
   for (const g of [...S.geckos.values(), ...(S.archive || [])]) if (g.breeder) cnt.set(g.breeder, (cnt.get(g.breeder) || 0) + 1);
   return [...cnt.entries()].sort((a, b) => b[1] - a[1]).slice(0, n).map(e => e[0]);
 };
+const frequentLocalities = (n = 6) => {
+  const cnt = new Map();
+  for (const g of [...S.geckos.values(), ...(S.archive || [])]) if (g.locality) cnt.set(g.locality, (cnt.get(g.locality) || 0) + 1);
+  return [...cnt.entries()].sort((a, b) => b[1] - a[1]).slice(0, n).map(e => e[0]);
+};
 const parentOptions = sex => [["", "—（なし）"], ...[...S.geckos.values()].filter(g => isBreeding(g) && g.sex === sex).sort((a, b) => a.id.localeCompare(b.id)).map(g => [g.id, g.id + "  " + (mz(g.morph) || "")])];
 const tempField = (adv, cur) => {
   const opts = tempOptions(), c = cur != null && cur !== "" ? String(cur) : "";
@@ -1771,6 +1776,7 @@ function geckoFields(mode, cur = {}) {
     { k: "grade", label: "評価", type: "seg", options: [["", "なし"], ...GRADES], def: "" },
     { k: "origin", label: "由来", type: "seg", options: ["自家繁殖", "購入", "その他"], def: "購入" },
     { k: "breeder", label: "ブリーダー（誰のCBか・ラベルに印刷）", ph: "入力するとこれまでの名前が候補に出ます", chips: frequentBreeders(), hist: frequentBreeders(Infinity), showIf: v => v.origin !== "自家繁殖" },
+    { k: "locality", label: "産地（名刺に印刷）", ph: "例 国内CB・アメリカ", chips: frequentLocalities(), hist: frequentLocalities(Infinity), showIf: v => v.origin !== "自家繁殖" },
     { k: "purchasePrice", label: "購入価格（円）", type: "number", ph: "例 15000", chips: ["5000", "10000", "15000", "20000", "30000", "50000"], showIf: v => v.origin !== "自家繁殖" },
     { k: "notes", label: "メモ", type: "textarea", ph: "任意" },
     { k: "sireId", label: "父", type: "select", scan: "♂", options: parentOptions("♂").concat(cur.sireId && !S.geckos.has(cur.sireId) ? [[cur.sireId, cur.sireId]] : []), adv: true },
@@ -1788,14 +1794,14 @@ function geckoFields(mode, cur = {}) {
 }
 function geckoValuesOut(v) {
   const o = { ...v, ...useFlags(v.use) }; delete o.use;
-  if (o.origin === "自家繁殖") { o.purchasePrice = ""; o.breeder = ""; }
+  if (o.origin === "自家繁殖") { o.purchasePrice = ""; o.breeder = ""; o.locality = ""; }
   return o;
 }
 /* registering several geckos in a row ("登録して次の個体へ") keeps what they usually share — use, origin, breeder,
    birthday, parents — and opens a fresh form right away; done counts how many were registered in this run */
 function newGeckoForm(pre = {}, done = []) {
   const register = async v => { const o = geckoValuesOut(v); if (o.weight === "") delete o.weight; return createGecko(o); };
-  const keep = v => ({ use: v.use, origin: v.origin, breeder: v.breeder, birthDate: v.birthDate, sireId: v.sireId, damId: v.damId, incubTemp: v.incubTemp });
+  const keep = v => ({ use: v.use, origin: v.origin, breeder: v.breeder, locality: v.locality, birthDate: v.birthDate, sireId: v.sireId, damId: v.damId, incubTemp: v.incubTemp });
   openForm({
     title: done.length ? `個体を登録（続けて ${done.length + 1}頭目）` : "個体を登録", fields: geckoFields("new"), values: { use: "breeding", origin: "購入", ...pre }, submit: "登録してIDを発行", moreLabel: "父母・孵化温度・体重など（必要なときだけ）",
     intro: `${done.length ? `<div class="infobox" style="margin:0 0 10px">登録済み: ${done.map(esc).join("・")}</div>` : ""}<p class="note" style="margin:0 0 10px">IDは自動で振られます。自家繁殖の子は、卵のQRから孵化を記録すると親情報つきで登録されます。</p>`,
@@ -2110,7 +2116,7 @@ function drawCup(ctx, sp, W, H) {
    which items, morph language, QR side, shop name, logo, footer and a note after the price. Everything is sized in
    fractions of the card, so any size draws the same way; the PDF uses about 300 dpi. */
 const CARD_DEF = { w: 91, h: 55, lang: "en", qr: "right", shop: "", footer: "", priceNote: "", logo: "",
-  items: { id: true, sex: true, morph: true, het: false, price: true, birth: true, temp: false, cb: false },
+  items: { id: true, sex: true, morph: true, sire: true, sireHet: true, dam: true, damHet: true, birth: true, origin: true, price: true },
   print: { portrait: true, dx: 0, dy: 0 }, mode: "design", overlay: { bg: "", boxes: {} } };
 const cardCfg = () => { const c = (S.settings && S.settings.card) || {}; return { ...CARD_DEF, ...c, items: { ...CARD_DEF.items, ...(c.items || {}) }, print: { ...CARD_DEF.print, ...(c.print || {}) } }; };
 const cardMM = () => { const c = cardCfg(); return [Math.min(150, Math.max(30, Number(c.w) || 91)), Math.min(150, Math.max(30, Number(c.h) || 55))]; };
@@ -2126,25 +2132,36 @@ async function ensureCardLogo() {
   if (!cardCfg().logo) return; cardLogoImg();
   const img = cardLogo.img; if (!img.complete) await new Promise(r => { img.onload = img.onerror = r; setTimeout(r, 3000); });
 }
+/* the card shows: morph with its het, ♂/♀, the parents' morphs and hets, birthday as 20260720, own-bred or where it came from, price, ID */
 const cardSpec = g => {
-  const c = cardCfg(), it = c.items, ja = c.lang === "ja";
-  const morph = !it.morph ? [] : c.lang === "en" ? [morphEnOf(g) || "—"] : ja ? [g.morph || "—"] : [g.morph || "—", morphEnOf(g)].filter((x, i, a) => x && a.indexOf(x) === i);
-  return { id: it.id ? g.id : "", qid: g.id,
-    sex: !it.sex ? "" : g.sex === "♂" ? (ja ? "♂ オス" : "♂ Male") : g.sex === "♀" ? (ja ? "♀ メス" : "♀ Female") : "",
-    morph, het: it.het && g.het ? (ja ? g.het : toEnglish(g.het)) : "",
+  const c = cardCfg(), it = c.items, ja = c.lang === "ja", en = c.lang === "en";
+  const hetOf = x => x.het ? (en ? toEnglish(x.het) : x.het) : "";
+  const names = (en ? [morphEnOf(g) || "—"] : ja ? [g.morph || "—"] : [g.morph || "—", morphEnOf(g)]).filter((x, i, a) => x && a.indexOf(x) === i);
+  const morph = !it.morph ? [] : [...names, hetOf(g)].filter(Boolean);
+  const par = id => (id && (S.geckos.get(id) || (S.archive || []).find(a => a.id === id))) || null;
+  const sire = par(g.sireId), dam = par(g.damId);
+  const pm = p => p ? (en ? morphEnOf(p) : p.morph) || "" : "";
+  const sex = g.sex === "♂" || g.sex === "♀" ? g.sex : "";
+  const birth = (g.birthDate || "").replace(/-/g, "");
+  const origin = g.origin === "自家繁殖" ? (en ? "Home bred" : "自家繁殖") : (g.locality || "").trim();
+  const raw = { id: g.id, sex, morph: [names.join(" / "), hetOf(g)].filter(Boolean).join(" "), sire: pm(sire), sireHet: sire ? hetOf(sire) : "", dam: pm(dam), damHet: dam ? hetOf(dam) : "",
+    birth, origin, price: g.price != null ? yen(g.price) + (c.priceNote ? " " + c.priceNote : "") : "" };
+  /* a parent line: "♂ Tangerine Raptor  het Eclipse" with whichever parts are switched on */
+  const parent = (sym, m, h, onM, onH) => { const t = [onM && m, onH && h].filter(Boolean).join("  "); return t ? sym + " " + t : ""; };
+  return { id: it.id ? g.id : "", qid: g.id, sex: it.sex ? sex : "", morph,
+    sire: parent(en ? "Sire" : "父", raw.sire, raw.sireHet, it.sire, it.sireHet), dam: parent(en ? "Dam" : "母", raw.dam, raw.damHet, it.dam, it.damHet),
     price: it.price && g.price != null ? yen(g.price) : "",
-    birth: it.birth && g.birthDate ? (ja ? "生年月日 " : "Birth ") + dot(g.birthDate) : "",
-    temp: it.temp && g.incubTemp != null && g.incubTemp !== "" ? g.incubTemp + "℃" : "",
-    cb: it.cb && cbText(g) ? cbText(g) : "",
+    birth: it.birth && birth ? (en ? "Birth " : "生年月日 ") + birth : "",
+    origin: it.origin ? origin : "",
     /* bare values for writing into the blanks of a pre-printed card (its own labels say what each is) */
-    raw: { id: g.id, sex: g.sex === "♂" ? (ja ? "♂ オス" : "♂ Male") : g.sex === "♀" ? (ja ? "♀ メス" : "♀ Female") : "", morph: (c.lang === "en" ? [morphEnOf(g)] : ja ? [g.morph] : [g.morph, morphEnOf(g)]).filter((x, i, a) => x && a.indexOf(x) === i).join(" / "), het: g.het ? (ja ? g.het : toEnglish(g.het)) : "",
-      price: g.price != null ? yen(g.price) + (c.priceNote ? " " + c.priceNote : "") : "", birth: g.birthDate ? dot(g.birthDate) : "", temp: g.incubTemp != null && g.incubTemp !== "" ? g.incubTemp + "℃" : "", cb: cbText(g) } };
+    raw };
 };
 /* ---- writing into a pre-printed card: each item has a box (fractions of the card) where its value goes ---- */
-const OVL_FIELDS = [["id", "ID"], ["morph", "モルフ"], ["het", "het"], ["sex", "性別"], ["birth", "生年月日"], ["price", "価格"], ["cb", "ブリーダー"], ["temp", "孵化温度"], ["qr", "QR"]];
-const OVL_DEF = { id: { x: .06, y: .07, w: .5, h: .15, on: true }, morph: { x: .06, y: .26, w: .56, h: .18, on: true }, het: { x: .06, y: .46, w: .56, h: .08, on: false },
-  sex: { x: .06, y: .57, w: .3, h: .08, on: true }, birth: { x: .06, y: .68, w: .4, h: .08, on: true }, price: { x: .06, y: .8, w: .5, h: .13, on: true },
-  cb: { x: .5, y: .68, w: .45, h: .08, on: false }, temp: { x: .5, y: .57, w: .2, h: .08, on: false }, qr: { x: .7, y: .25, w: .25, h: .45, on: true } };
+const OVL_FIELDS = [["id", "ID"], ["morph", "モルフ（het込み）"], ["sex", "雌雄"], ["sire", "父親"], ["sireHet", "父親het"], ["dam", "母親"], ["damHet", "母親het"],
+  ["birth", "誕生日"], ["origin", "自家繁殖・産地"], ["price", "価格"], ["qr", "QR"]];
+const OVL_DEF = { id: { x: .06, y: .06, w: .45, h: .13, on: true }, sex: { x: .55, y: .06, w: .12, h: .13, on: true }, morph: { x: .06, y: .21, w: .62, h: .17, on: true },
+  sire: { x: .06, y: .40, w: .62, h: .07, on: true }, sireHet: { x: .06, y: .48, w: .62, h: .06, on: true }, dam: { x: .06, y: .56, w: .62, h: .07, on: true }, damHet: { x: .06, y: .64, w: .62, h: .06, on: true },
+  birth: { x: .06, y: .73, w: .3, h: .08, on: true }, origin: { x: .38, y: .73, w: .3, h: .08, on: true }, price: { x: .06, y: .83, w: .5, h: .12, on: true }, qr: { x: .72, y: .25, w: .24, h: .45, on: true } };
 const ovlBoxes = () => { const b = cardCfg().overlay?.boxes || {}; return Object.fromEntries(OVL_FIELDS.map(([k]) => [k, { ...OVL_DEF[k], ...(b[k] || {}) }])); };
 /* the blank card's photo is only a guide on screen; it is never printed */
 let ovlPreview = null; // { bg: Image, sel: key } while the settings preview draws
@@ -2160,7 +2177,8 @@ function drawOverlay(ctx, sp, W, H) {
     const x = b.x * W, y = b.y * H, w = b.w * W, h = b.h * H;
     if (k === "qr") { const s = Math.min(w, h); drawQR(ctx, qrText(sp.qid || raw.id), x + (w - s) / 2, y + (h - s) / 2, s); }
     else {
-      const t = raw[k]; if (!t) continue;
+      /* a card with one blank per parent gets the parent's het in that blank too */
+      const t = (k === "sire" || k === "dam") && !boxes[k + "Het"].on ? [raw[k], raw[k + "Het"]].filter(Boolean).join("  ") : raw[k]; if (!t) continue;
       /* the value fills its box: one line as large as the height allows, two lines when the box is tall and the text long */
       const mono = ["id", "price", "birth"].includes(k), font = s => `${k === "id" || k === "morph" || k === "price" ? 700 : 500} ${s}px ${mono ? LMONO : LJP}`;
       const full = Math.round(h * 0.78);
@@ -2192,16 +2210,17 @@ function drawCard(ctx, sp, W, H) {
   const tx = !port && qs && c.qr === "left" ? pad * 2 + qs : pad;
   const tw = port ? W - pad * 2 : W - pad * (qs ? 3 : 2) - qs;
   const base = port && qs ? qy - pad * 0.5 : H - pad, btw = port && qs ? W - pad * 2 : tw;
-  const meta = [sp.birth, sp.temp].filter(Boolean).join("   ");
-  const mrows = [...sp.morph.map((t, i) => ({ t, b: i === 0, k: i === 0 ? 0.095 : 0.07, n: i === 0 ? 3 : 2 })), ...(sp.het ? [{ t: sp.het, b: false, k: 0.065, n: 2 }] : [])];
+  const meta = sp.birth || "";
+  const mrows = [...sp.morph.map((t, i) => ({ t, b: i === 0, k: i === 0 ? 0.095 : 0.07, n: i === 0 ? 3 : 2 })),
+    ...[sp.sire, sp.dam].filter(Boolean).map((t, i) => ({ t, b: false, k: 0.06, n: 2, gap: i === 0 ? 0.3 : 0 }))];
   /* everything is sized by one scale; the largest scale at which the morph fits between the top and bottom blocks is used */
   const plan = sc => {
     const f = k => Math.round(u * k * sc);
     const F = { shop: f(0.13), shopT: f(0.08), id: f(head ? 0.2 : 0.25), sex: f(0.08), price: f(0.13), note: f(0.06), meta: f(0.075), foot: f(0.065) };
     const top = pad + (head ? F.shop + f(0.04) : 0) + (sp.id ? F.id * 1.08 : 0) + (sp.sex ? F.sex * 1.3 : 0);
-    const bottom = base - (c.footer ? F.foot * 1.35 : 0) - (meta ? F.meta * 1.35 : 0) - (sp.cb ? F.meta * 1.35 : 0) - (sp.price ? F.price * 1.3 : 0);
+    const bottom = base - (c.footer ? F.foot * 1.35 : 0) - (meta ? F.meta * 1.35 : 0) - (sp.origin ? F.meta * 1.35 : 0) - (sp.price ? F.price * 1.3 : 0);
     const lay = mrows.map(r => { const fs = f(r.k); ctx.font = `${r.b ? 700 : 500} ${fs}px ${LJP}`; return { r, fs, lines: wrapLines(ctx, r.t, tw / 0.85, r.n) }; });
-    return { F, top, bottom, lay, ok: lay.reduce((a, x) => a + x.lines.length * x.fs * 1.2, 0) <= bottom - top };
+    return { F, top, bottom, lay, ok: lay.reduce((a, x) => a + x.lines.length * x.fs * 1.2 + (x.r.gap || 0) * x.fs, 0) <= bottom - top };
   };
   let P = plan(1);
   for (let sc = 0.95; !P.ok && sc >= 0.5; sc -= 0.05) P = plan(sc);
@@ -2217,13 +2236,13 @@ function drawCard(ctx, sp, W, H) {
   if (sp.id) { ctx.font = `700 ${F.id}px ${LMONO}`; ctx.fillText(sp.id, tx, ty - F.id * 0.04, tw); ty += F.id * 1.08; }
   if (sp.sex) { ctx.font = `700 ${F.sex}px ${LJP}`; ctx.fillText(sp.sex, tx, ty, tw); ty += F.sex * 1.3; }
   /* the morph (and het) in the middle */
-  for (const x of P.lay) { ctx.font = `${x.r.b ? 700 : 500} ${x.fs}px ${LJP}`; for (const l of x.lines) { if (ty + x.fs > P.bottom + 1) break; ctx.fillText(l, tx, ty, tw); ty += x.fs * 1.2; } }
+  for (const x of P.lay) { ctx.font = `${x.r.b ? 700 : 500} ${x.fs}px ${LJP}`; ty += (x.r.gap || 0) * x.fs; for (const l of x.lines) { if (ty + x.fs > P.bottom + 1) break; ctx.fillText(l, tx, ty, tw); ty += x.fs * 1.2; } }
   /* bottom block, laid out upward from the bottom edge: footer, birthday / temperature, breeder, price */
   let by = base;
   const up = (text, size, mono, weight = 500) => { ctx.font = `${weight} ${size}px ${mono ? LMONO : LJP}`; by -= size; ctx.fillText(text, tx, by, btw); by -= size * 0.35; };
   if (c.footer) up(c.footer, F.foot, false);
   if (meta) up(meta, F.meta, true);
-  if (sp.cb) up(sp.cb, F.meta, false);
+  if (sp.origin) up(sp.origin, F.meta, false);
   if (sp.price) {
     ctx.font = `700 ${F.price}px ${LMONO}`; by -= F.price; ctx.fillText(sp.price, tx, by, btw);
     if (c.priceNote) { const pw = Math.min(ctx.measureText(sp.price).width, btw), gap = Math.round(u * 0.03); ctx.font = `500 ${F.note}px ${LJP}`; ctx.fillText(c.priceNote, tx + pw + gap, by + F.price - F.note * 1.1, Math.max(0, btw - pw - gap)); }
@@ -2238,10 +2257,10 @@ async function matchCardFromPhoto(file) {
   const cv = document.createElement("canvas"); cv.width = Math.round(iw * sc); cv.height = Math.round(ih * sc); cv.getContext("2d").drawImage(img, 0, 0, cv.width, cv.height);
   const data = cv.toDataURL("image/jpeg", 0.85).split(",")[1];
   const prompt = `これはレオパ（ヒョウモントカゲモドキ）のブリーダーが使っている名刺（プライスカード）の写真です。同じ見た目のカードを作るための設定を、次の形のJSONだけで答えてください（説明は不要）。
-{"w":横mm,"h":縦mm,"lang":"en"|"ja"|"both","qr":"right"|"left"|"none","items":{"id":bool,"sex":bool,"morph":bool,"het":bool,"price":bool,"birth":bool,"temp":bool,"cb":bool},"shop":"店名やブランド名（なければ空）","footer":"一番下の小さい文字（SNSなど。なければ空）","priceNote":"価格の後ろの文字（税込など。なければ空）","logo":null または {"x":左端,"y":上端,"w":幅,"h":高さ}}
+{"w":横mm,"h":縦mm,"lang":"en"|"ja"|"both","qr":"right"|"left"|"none","items":{"id":bool,"sex":bool,"morph":bool,"sire":bool,"sireHet":bool,"dam":bool,"damHet":bool,"birth":bool,"origin":bool,"price":bool},"shop":"店名やブランド名（なければ空）","footer":"一番下の小さい文字（SNSなど。なければ空）","priceNote":"価格の後ろの文字（税込など。なければ空）","logo":null または {"x":左端,"y":上端,"w":幅,"h":高さ}}
 - w,h: 一般的な名刺なら横向き91×55、縦向き55×91。比率から判断。
 - lang: モルフ名が英語なら"en"、日本語なら"ja"、両方あれば"both"。
-- items: カードに載っている項目だけtrue（id=個体番号、sex=性別、morph=モルフ名、het、price=価格、birth=生年月日、temp=孵化温度、cb=ブリーダー名やCB表記）。
+- items: カードに載っている項目だけtrue（id=個体番号、sex=雌雄、morph=モルフ名（het込み）、sire=父親のモルフ、sireHet=父親のhet、dam=母親のモルフ、damHet=母親のhet、birth=生年月日、origin=自家繁殖か産地、price=価格）。
 - logo: ロゴ画像があれば、写真全体に対する位置を0〜1の割合で。カード以外の背景も含めた写真全体が基準です。`;
   const r = await sample([{ role: "user", content: [{ type: "image", source: { type: "base64", media_type: "image/jpeg", data } }, { type: "text", text: prompt }] }], { modelTier: "default" });
   const m = String(r?.text || "").match(/\{[\s\S]*\}/); if (!m) throw new Error("答えを読み取れませんでした");
@@ -2271,11 +2290,12 @@ async function matchBlankCard(file) {
   const cv = document.createElement("canvas"); cv.width = Math.round(iw * sc); cv.height = Math.round(ih * sc); cv.getContext("2d").drawImage(img, 0, 0, cv.width, cv.height);
   const prompt = `これはレオパ（ヒョウモントカゲモドキ）の販売用プライスカードの写真です。店名や「Morph」「Price」などの見出しが印刷済みで、個体ごとの情報を書き込む空欄があります。
 この空欄にプリンターで情報を印刷したいので、次の形のJSONだけで答えてください（説明は不要）。
-{"card":{"x":0〜1,"y":0〜1,"w":0〜1,"h":0〜1},"w_mm":横mm,"h_mm":縦mm,"fields":{"id":箱,"morph":箱,"het":箱,"sex":箱,"birth":箱,"price":箱,"cb":箱,"temp":箱,"qr":箱}}
+{"card":{"x":0〜1,"y":0〜1,"w":0〜1,"h":0〜1},"w_mm":横mm,"h_mm":縦mm,"fields":{"id":箱,"morph":箱,"sex":箱,"sire":箱,"sireHet":箱,"dam":箱,"damHet":箱,"birth":箱,"origin":箱,"price":箱,"qr":箱}}
 - card: 写真全体に対するカードの位置（割合）。
 - w_mm,h_mm: 名刺サイズなら 91×55（縦向きなら 55×91）。比率から判断。
 - 箱: {"x","y","w","h"} を「カードに対する」割合（0〜1）で。その項目の値を書き込む空欄の範囲（見出しの文字は含めない）。空欄が無い項目は null。
-- id=個体番号, morph=モルフ名, het, sex=性別, birth=生年月日, price=価格, cb=ブリーダー, temp=孵化温度, qr=QRコードを入れる場所。`;
+- id=個体番号, morph=モルフ名（het込み）, sex=雌雄（♂♀）, sire=父親のモルフ, sireHet=父親のhet, dam=母親のモルフ, damHet=母親のhet, birth=生年月日, origin=自家繁殖か産地, price=価格, qr=QRコードを入れる場所。
+- 父親・母親の欄が1つだけでhet用の欄が無いときは、sire/dam にその欄を入れて sireHet/damHet は null。`;
   const r = await sample([{ role: "user", content: [{ type: "image", source: { type: "base64", media_type: "image/jpeg", data: cv.toDataURL("image/jpeg", 0.85).split(",")[1] } }, { type: "text", text: prompt }] }], { modelTier: "default" });
   const m = String(r?.text || "").match(/\{[\s\S]*\}/); if (!m) throw new Error("答えを読み取れませんでした");
   const j = JSON.parse(m[0]), frac = v => typeof v === "number" && v >= 0 && v <= 1;
@@ -2291,7 +2311,7 @@ async function matchBlankCard(file) {
 }
 /* the settings page for the price card, with a live preview on a sample gecko */
 function cardSettingsSheet() {
-  const sample = () => [...S.geckos.values()].find(g => isSale(g) && g.price != null) || { id: "26-0012", sex: "♂", morph: "タンジェリン ラプター", het: "66%het エクリプス", birthDate: "2026-07-20", incubTemp: 31.5, price: 25000, origin: "購入", breeder: "〇〇レプタイルズ" };
+  const sample = () => [...S.geckos.values()].find(g => isSale(g) && g.price != null && g.sireId && g.damId) || [...S.geckos.values()].find(g => isSale(g) && g.price != null) || { id: "26-0012", sex: "♂", morph: "タンジェリン ラプター", het: "66%het エクリプス", birthDate: "2026-07-20", incubTemp: 31.5, price: 25000, origin: "購入", breeder: "〇〇レプタイルズ" };
   let save = 0, sel = "morph", drag = null;
   const put = async patch => { const next = { ...cardCfg(), ...patch }; S.settings.card = next; clearTimeout(save); save = setTimeout(() => saveMeta("settings", { card: next }).catch(e => toast(e.message)), 400); };
   const overlay = () => cardCfg().mode === "overlay";
@@ -2303,7 +2323,7 @@ function cardSettingsSheet() {
     cv.style.cssText = "width:100%;height:auto;display:block;border:1px solid var(--line);border-radius:6px;touch-action:none";
     box.innerHTML = ""; box.append(cv); $("#card-size", s.body).textContent = qsize("card");
   };
-  const ITEMS = [["id", "ID"], ["sex", "性別"], ["morph", "モルフ"], ["het", "het"], ["price", "価格"], ["birth", "生年月日"], ["temp", "孵化温度"], ["cb", "ブリーダー（CB）"]];
+  const ITEMS = [["morph", "モルフ（het込み）"], ["sex", "雌雄"], ["sire", "父親"], ["sireHet", "父親het"], ["dam", "母親"], ["damHet", "母親het"], ["birth", "誕生日"], ["origin", "自家繁殖・産地"], ["price", "価格"], ["id", "ID"]];
   const SIZES = [["91x55", "91×55（横）"], ["55x91", "55×91（縦）"], ["custom", "サイズを指定"]];
   const draw = s => {
     const c = cardCfg(), sz = c.w + "x" + c.h, preset = SIZES.some(x => x[0] === sz) ? sz : "custom", ov = c.mode === "overlay", boxes = ovlBoxes();
@@ -3975,7 +3995,7 @@ $("#chat-in").addEventListener("keydown", e => { if (e.key === "Enter" && (e.met
 document.addEventListener("keydown", e => { if (e.key === "Escape" && sheets.length) closeSheet(sheets[sheets.length - 1]); });
 
 /* ---------- app: budget / backup strip, settings, automatic backup, updates ---------- */
-const APP_VERSION = "2026-11-09-11";
+const APP_VERSION = "2026-11-09-12";
 const fmtGB = b => (b / 1e9).toFixed(b >= 1e10 ? 0 : 1) + "GB";
 const fmtTime = t => t ? new Date(t).toLocaleString("ja-JP", { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" }) : "まだありません";
 function setPill(el, { val, ratio, state }) {
