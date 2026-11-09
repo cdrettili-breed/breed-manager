@@ -1531,7 +1531,7 @@ function fieldHTML(f, v) {
         ${sel("da", "生まれた日", [["", "日"], ...Array.from({ length: 31 }, (_, i) => [pad(i + 1, 2), i + 1 + "日"])], dv, p === "d")}
       </div>`;
   }
-  else c = `<input id="${id}" type="${f.type === "date" ? "date" : "text"}"${f.type === "number" ? ' inputmode="decimal"' : ""} value="${esc(v)}" placeholder="${esc(f.ph || "")}" autocomplete="off"${f.type === "id" ? ' autocapitalize="characters"' : ""}${f.ac ? ` data-ac="1"${f.geno?.base ? ` data-gbase="f-${esc(f.geno.base)}"` : ""}${f.geno?.homo ? ` data-ghomo="f-${esc(f.geno.homo)}"` : ""}` : ""}>${f.ac ? `<div class="chips wrap acbox" data-acbox="${id}" hidden></div>` : ""}`;
+  else c = `<input id="${id}" type="${f.type === "date" ? "date" : "text"}"${f.type === "number" ? ' inputmode="decimal"' : ""} value="${esc(v)}" placeholder="${esc(f.ph || "")}" autocomplete="off"${f.type === "id" ? ' autocapitalize="characters"' : ""}${f.hist ? ` data-ac="hist" data-hist="${esc(JSON.stringify(f.hist))}"` : ""}${f.ac ? ` data-ac="1"${f.geno?.base ? ` data-gbase="f-${esc(f.geno.base)}"` : ""}${f.geno?.homo ? ` data-ghomo="f-${esc(f.geno.homo)}"` : ""}` : ""}>${f.ac || f.hist ? `<div class="chips wrap acbox" data-acbox="${id}" hidden></div>` : ""}`;
   const chips = f.chips && f.chips.length ? `<div class="chips wrap">${f.chips.map(ch => { const [val, lab] = optPair(ch); return `<button type="button" class="chip" data-fill="${esc(f.k)}" data-val="${esc(val)}"${f.append ? ' data-append="1"' : ""}>${esc(lab)}</button>`; }).join("")}</div>` : "";
   return `<div class="field" data-field="${esc(f.k)}">${f.type === "seg" ? `<label>${esc(f.label)}</label>` : `<label for="${id}">${esc(f.label)}</label>`}${c}${chips}${f.pick ? morphPicker(id, f.pick) : ""}${f.hint ? `<p class="note">${esc(f.hint)}</p>` : ""}</div>`;
 }
@@ -1618,8 +1618,17 @@ document.addEventListener("change", e => {
   if (inp.dataset.gbase || inp.dataset.ghomo) autoGeno(inp);
 });
 const acToken = v => { const m = String(v).match(/(\S*)$/); return m ? m[1] : ""; };
+/* names typed before (breeders): matched anywhere in the name, hiragana finding katakana */
+const kanaFold = s => fold(s).replace(/[ぁ-ゖ]/g, c => String.fromCharCode(c.charCodeAt(0) + 0x60)).replace(/\s+/g, "");
+function showHist(inp, box) {
+  const q = kanaFold(inp.value); let all = []; try { all = JSON.parse(inp.dataset.hist || "[]"); } catch {}
+  const list = !q ? [] : all.filter(n => kanaFold(n) !== q && kanaFold(n).includes(q)).slice(0, 8);
+  box.innerHTML = list.map(w => `<button type="button" class="chip" data-acpick="${esc(w)}" data-acfor="${esc(inp.id)}">${esc(w)}</button>`).join("");
+  box.hidden = !list.length;
+}
 function showAc(inp) {
   const box = inp.parentElement.querySelector(`[data-acbox="${inp.id}"]`); if (!box) return;
+  if (inp.dataset.ac === "hist") return showHist(inp, box);
   const tok = acToken(inp.value), list = !tok ? [] : inp.dataset.ac === "gene" ? suggestGene(tok) : suggestMorph(tok).filter(w => w !== tok);
   box.innerHTML = list.map(w => `<button type="button" class="chip" data-acpick="${esc(w)}" data-acfor="${esc(inp.id)}">${esc(w)}${morphLang() === "en" || /^[\x00-\x7f]+$/.test(tok) ? ` <span class="muted small">${esc(toEnglish(w))}</span>` : ""}</button>`).join("");
   box.hidden = !list.length;
@@ -1679,7 +1688,8 @@ document.addEventListener("click", e => {
     inp.value = rest;
     const root = inp.closest("form, .sheet, section") || document, k = inp.id.slice(2);
     addGene(inp, inp.dataset.gkind, c.dataset.acpick, pct || hetPct(root, k));
-  } else inp.value = inp.value.replace(/(\S*)$/, c.dataset.acpick) + " ";
+  } else if (inp.dataset.ac === "hist") inp.value = c.dataset.acpick;
+  else inp.value = inp.value.replace(/(\S*)$/, c.dataset.acpick) + " ";
   c.parentElement.hidden = true;
   if (inp.dataset.gbase || inp.dataset.ghomo) autoGeno(inp);
   inp.focus();
@@ -1760,7 +1770,7 @@ function geckoFields(mode, cur = {}) {
     { k: "birthDate", label: "生年月日", type: "birth" },
     { k: "grade", label: "評価", type: "seg", options: [["", "なし"], ...GRADES], def: "" },
     { k: "origin", label: "由来", type: "seg", options: ["自家繁殖", "購入", "その他"], def: "購入" },
-    { k: "breeder", label: "ブリーダー（誰のCBか・ラベルに印刷）", ph: "例 〇〇レプタイルズ", chips: frequentBreeders(), showIf: v => v.origin !== "自家繁殖" },
+    { k: "breeder", label: "ブリーダー（誰のCBか・ラベルに印刷）", ph: "入力するとこれまでの名前が候補に出ます", chips: frequentBreeders(), hist: frequentBreeders(Infinity), showIf: v => v.origin !== "自家繁殖" },
     { k: "purchasePrice", label: "購入価格（円）", type: "number", ph: "例 15000", chips: ["5000", "10000", "15000", "20000", "30000", "50000"], showIf: v => v.origin !== "自家繁殖" },
     { k: "notes", label: "メモ", type: "textarea", ph: "任意" },
     { k: "sireId", label: "父", type: "select", scan: "♂", options: parentOptions("♂").concat(cur.sireId && !S.geckos.has(cur.sireId) ? [[cur.sireId, cur.sireId]] : []), adv: true },
@@ -3965,7 +3975,7 @@ $("#chat-in").addEventListener("keydown", e => { if (e.key === "Enter" && (e.met
 document.addEventListener("keydown", e => { if (e.key === "Escape" && sheets.length) closeSheet(sheets[sheets.length - 1]); });
 
 /* ---------- app: budget / backup strip, settings, automatic backup, updates ---------- */
-const APP_VERSION = "2026-11-09-10";
+const APP_VERSION = "2026-11-09-11";
 const fmtGB = b => (b / 1e9).toFixed(b >= 1e10 ? 0 : 1) + "GB";
 const fmtTime = t => t ? new Date(t).toLocaleString("ja-JP", { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" }) : "まだありません";
 function setPill(el, { val, ratio, state }) {
