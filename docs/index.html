@@ -501,11 +501,11 @@ function toNum(v) {
 const toBool = v => v === true || v === "true" || v === 1 || v === "1" || v === "on";
 
 /* ---------- domain ---------- */
-const STATUSES = ["育成中", "販売中", "予約済", "繁殖用", "引退", "販売済", "死亡"];
+const STATUSES = ["育成中", "販売中", "予約済", "委託中", "繁殖用", "引退", "販売済", "死亡"];
 const INACTIVE = new Set(["販売済", "死亡"]);
 const GRADES = ["A", "B", "C", "D", "E"];
-const CHANNELS = ["小売り", "業販"];
-const ST_CLASS = { 繁殖用: "s-breed", 育成中: "s-grow", 販売中: "s-sale", 予約済: "s-hold", 販売済: "s-sold", 引退: "s-off", 死亡: "s-dead", 産卵中: "s-sale", 終了: "s-off", 孵卵中: "s-grow", 孵化済: "s-sale", 不良: "s-dead", 失敗: "s-dead" };
+const CHANNELS = ["小売り", "業販", "委託"];
+const ST_CLASS = { 繁殖用: "s-breed", 育成中: "s-grow", 販売中: "s-sale", 予約済: "s-hold", 委託中: "s-hold", 販売済: "s-sold", 引退: "s-off", 死亡: "s-dead", 産卵中: "s-sale", 終了: "s-off", 孵卵中: "s-grow", 孵化済: "s-sale", 不良: "s-dead", 失敗: "s-dead" };
 const LAY_INTERVAL = 14;
 const BASE_TEMPS = ["28.5", "31.5"];
 const pill = s => `<span class="pill ${ST_CLASS[s] || "s-off"}">${esc(s || "—")}</span>`;
@@ -559,17 +559,18 @@ function normSex(s) {
   return "不明";
 }
 const GFIELDS = ["name", "sex", "morph", "base", "homo", "het", "morphEn", "birthDate", "incubTemp", "origin", "breeder", "purchasePrice", "price", "wholesalePrice", "sireId", "damId", "clutchId", "eggId", "status", "grade", "breeding", "forSale",
-  "soldPrice", "soldDate", "saleChannel", "saleNotes", "deathDate", "weight", "notes", "packNo"];
+  "soldPrice", "soldDate", "saleChannel", "saleNotes", "deathDate", "weight", "notes", "packNo",
+  "consignee", "consignDate", "consignPrice", "consignFee", "consignNote", "consignFrom", "consignSrcId"];
 const GLABEL = { name: "呼び名", sex: "性別", morph: "モルフ", base: "ベースモルフ", homo: "homo", het: "het", breeder: "ブリーダー", morphEn: "英語モルフ名", birthDate: "生年月日", incubTemp: "孵化温度", origin: "由来", purchasePrice: "購入価格", sireId: "父", damId: "母", clutchId: "産卵", eggId: "卵", notes: "メモ", breeding: "用途", forSale: "用途" };
 function cleanGecko(x) {
   const o = {};
   for (const k of GFIELDS) {
     if (x[k] === undefined) continue;
     let v = x[k];
-    if (["purchasePrice", "price", "wholesalePrice", "soldPrice", "weight", "incubTemp"].includes(k)) v = toNum(v);
+    if (["purchasePrice", "price", "wholesalePrice", "soldPrice", "weight", "incubTemp", "consignPrice", "consignFee"].includes(k)) v = toNum(v);
     else if (k === "sex") v = normSex(v);
     else if (k === "birthDate") v = toBirth(v);
-    else if (k === "soldDate" || k === "deathDate") v = toDate(v);
+    else if (k === "soldDate" || k === "deathDate" || k === "consignDate") v = toDate(v);
     else if (["sireId", "damId", "clutchId", "eggId"].includes(k)) v = v ? normId(v) : "";
     else if (k === "breeding" || k === "forSale") v = toBool(v);
     else if (k === "grade") { v = String(v || "").trim().toUpperCase(); if (v && !GRADES.includes(v)) throw new Error("評価は A〜E です"); }
@@ -1434,7 +1435,7 @@ function breedingOverview() {
       .map(e => ({ id: e.id, clutchId: e.clutchId, damId: e.damId, sireId: e.sireId, layDate: e.layDate, temp: e.temp, tempPlan: planText(e.temp, e.plan) || undefined, tempNow: tempNow(e), nextTempChange: nextChange(e) || undefined, expectedHatch: e.expectedHatch, daysLeft: daysBetween(t, e.expectedHatch) })).slice(0, 120),
   };
 }
-const SALE_OPEN = ["育成中", "販売中", "予約済"];
+const SALE_OPEN = ["育成中", "販売中", "予約済", "委託中"];
 function saleStock() { return [...S.geckos.values()].filter(g => isSale(g) && SALE_OPEN.includes(g.status)); }
 function ageBuckets(list) {
   const by = new Map();
@@ -1444,7 +1445,7 @@ function ageBuckets(list) {
 const ageLabel = m => m < 0 ? "不明" : m >= 12 ? "12か月〜" : m + "か月";
 function salesStats(sales) {
   const y = today().slice(0, 4), m = today().slice(0, 7);
-  const agg = l => ({ count: l.length, total: l.reduce((a, g) => a + (g.soldPrice || 0), 0), retail: l.filter(g => g.saleChannel !== "業販").length, wholesale: l.filter(g => g.saleChannel === "業販").length });
+  const agg = l => ({ count: l.length, total: l.reduce((a, g) => a + (g.soldPrice || 0), 0), retail: l.filter(g => !["業販", "委託"].includes(g.saleChannel)).length, wholesale: l.filter(g => g.saleChannel === "業販").length, consign: l.filter(g => g.saleChannel === "委託").length });
   return { all: agg(sales), year: agg(sales.filter(g => (g.soldDate || "").startsWith(y))), month: agg(sales.filter(g => (g.soldDate || "").startsWith(m))) };
 }
 
@@ -1813,11 +1814,121 @@ function sellForm(g) {
     fields: [
       { k: "price", label: "価格（円）", type: "number", ph: "タップで選ぶか入力", chips: priceChips(g) },
       { k: "date", label: "販売日", type: "date" },
-      { k: "channel", label: "区分", type: "seg", options: CHANNELS, def: "小売り" },
+      { k: "channel", label: "区分", type: "seg", options: CHANNELS, def: g.status === "委託中" ? "委託" : "小売り" },
       { k: "notes", label: "メモ", type: "textarea", ph: "任意（イベント名・お客様など）" }],
-    values: { date: today(), price: g.price ?? "" },
+    values: g.status === "委託中" ? { date: today(), price: g.consignPrice ?? g.price ?? "", notes: "委託先: " + (g.consignee || "") } : { date: today(), price: g.price ?? "" },
     onSubmit: async v => { if (toNum(v.price) == null) throw new Error("価格を選ぶか入力してください"); await sellGecko({ id: g.id, ...v }); return g.id + " を販売済にしました"; }
   });
+}
+/* ---------- consignment (委託) ----------
+   A gecko placed with a shop or another breeder is "委託中" with who, when, at what price and fee. What the consignee
+   needs travels in a share link / QR of its own (docs/info/#d=…): only those fields, deflated into the link — the
+   ledger's private QR codes stay private. Anyone can open it; a consignee using Breed Manager scans it with the app
+   and registers the gecko as one taken on consignment. */
+const consignBase = () => ART_URL + "info/";
+/* the fields go in a fixed order (an array is much shorter than keys); unpackInfo turns it back into an object */
+const INFO_KEYS = ["id", "sx", "m", "het", "b", "cb", "p", "fee", "from", "d", "note"];
+async function packInfo(o) {
+  const arr = INFO_KEYS.map(k => o[k] ?? null); while (arr.length && (arr[arr.length - 1] === null || arr[arr.length - 1] === "")) arr.pop();
+  const bytes = new TextEncoder().encode(JSON.stringify(["c1", ...arr]));
+  if (!window.CompressionStream) return "0" + b64url(bytes);
+  return "1" + b64url(new Uint8Array(await new Response(new Blob([bytes]).stream().pipeThrough(new CompressionStream("deflate-raw"))).arrayBuffer()));
+}
+async function unpackInfo(s) {
+  let u = b64uBytes(s.slice(1));
+  if (s[0] === "1") u = new Uint8Array(await new Response(new Blob([u]).stream().pipeThrough(new DecompressionStream("deflate-raw"))).arrayBuffer());
+  const j = JSON.parse(new TextDecoder().decode(u));
+  return Array.isArray(j) && j[0] === "c1" ? Object.fromEntries(INFO_KEYS.map((k, i) => [k, j[i + 1] ?? (["p", "fee"].includes(k) ? null : "")])) : j;
+}
+/* what the consignee gets: short keys keep the QR small */
+const consignInfo = g => ({ id: g.id, sx: g.sex || "", m: g.morph || "", het: g.het || "", b: g.birthDate || "",
+  cb: cbOf(g), p: g.consignPrice ?? g.price ?? null, fee: g.consignFee ?? null, from: (S.settings.ownBreeder || "").trim(), d: g.consignDate || "", note: g.consignNote || "" });
+async function consignLink(g) { return consignBase() + "#d=" + await packInfo(consignInfo(g)); }
+const isConsignQR = t => typeof t === "string" && t.includes("/info/#d=");
+const frequentConsignees = () => [...new Set([...S.geckos.values(), ...(S.archive || [])].map(g => g.consignee).filter(Boolean))].slice(0, 6);
+async function consignGecko(id, v) {
+  const to = String(v.consignee || "").trim(); if (!to) throw new Error("委託先を入れてください");
+  const g = await getRec("geckos", id); if (!g) throw new Error(id + " が見つかりません");
+  if (INACTIVE.has(g.status)) throw new Error(g.id + " はすでに「" + g.status + "」です");
+  return updateGecko(g.id, { status: "委託中", consignee: to, consignDate: v.date || today(), consignPrice: v.price, consignFee: v.fee, consignNote: v.note || "",
+    ...(isSale(g) ? {} : { forSale: true }) }, "委託に出す（" + to + (toNum(v.price) != null ? "・" + yen(toNum(v.price)) : "") + "）");
+}
+async function unconsignGecko(id) {
+  const g = await getRec("geckos", id); if (!g) throw new Error(id + " が見つかりません");
+  return updateGecko(g.id, { status: "販売中" }, "委託から戻す（" + (g.consignee || "") + "）");
+}
+function consignForm(g) {
+  openForm({ title: g.id + " を委託に出す", submit: "委託に出す",
+    intro: `<div class="infobox">${sxHTML(g.sex)} <b class="mono">${esc(g.id)}</b> ${esc(mz(g.morph) || "")}</div>`,
+    fields: [
+      { k: "consignee", label: "委託先", ph: "例 〇〇ペットショップ", chips: frequentConsignees() },
+      { k: "price", label: "委託先での販売価格（円）", type: "number", ph: "任意", chips: priceChips(g) },
+      { k: "fee", label: "手数料（%）", type: "number", ph: "任意（例 20）", chips: ["10", "15", "20", "30"] },
+      { k: "date", label: "委託した日", type: "date" },
+      { k: "note", label: "委託先へのメモ", type: "textarea", ph: "任意（餌・注意点など。委託先に渡る情報に入ります）" }],
+    values: { date: today(), price: g.price ?? "", consignee: g.consignee || "" },
+    onSubmit: async v => { const g2 = await consignGecko(g.id, v); setTimeout(() => consignSheet(g2.id), 80); return g2.id + " を委託中にしました"; } });
+}
+/* the consignment hand-over: the QR / link with the shared fields, and a label carrying that QR */
+async function consignSheet(id) {
+  const g = await getRec("geckos", id); if (!g) { toast(id + " が見つかりません"); return; }
+  const link = await consignLink(g), info = consignInfo(g);
+  openSheet({ title: g.id + " の委託情報", render: s => {
+    s.body.innerHTML = `
+      <p class="note" style="margin:0 0 8px">委託先にこのQRを読み取ってもらうか、リンクを送ってください。渡るのは下の内容だけです（台帳のほかの情報やラベルのQRは見えません）。</p>
+      <div class="qrbox" style="max-width:240px;margin:0 auto" aria-label="委託情報のQRコード">${qrSVG(link)}</div>
+      <dl class="kv" style="margin-top:10px">
+        <dt>個体</dt><dd>${sxHTML(g.sex)} <span class="mono">${esc(g.id)}</span> ${esc(mz(g.morph) || "")}${g.het ? `<br><span class="muted small">${esc(mz(g.het))}</span>` : ""}</dd>
+        <dt>生年月日</dt><dd>${esc(birthText(g.birthDate) || "不明")}</dd>
+        ${info.cb ? `<dt>ブリーダー</dt><dd>${esc(info.cb)} CB</dd>` : ""}
+        <dt>委託先</dt><dd>${esc(g.consignee || "—")} · ${esc(g.consignDate || "")}</dd>
+        ${info.p != null ? `<dt>販売価格</dt><dd class="mono">${yen(info.p)}${info.fee != null ? ` <span class="muted small">手数料 ${esc(info.fee)}%</span>` : ""}</dd>` : ""}
+        ${info.note ? `<dt>メモ</dt><dd style="white-space:pre-wrap">${esc(info.note)}</dd>` : ""}
+      </dl>
+      <div class="botacts"><button class="btn abtn primary" data-c="share">リンクを送る</button><button class="btn abtn" data-c="label">委託用ラベルを印刷</button></div>
+      <p class="note">委託先がBreed Managerを使っていれば、アプリ右上のQRボタンでこのQRを読み取ると、委託預かりの個体として登録できます。</p>`;
+    s.body.onclick = async e => {
+      const b = e.target.closest("[data-c]"); if (!b) return;
+      if (b.dataset.c === "share") {
+        try { if (navigator.share) await navigator.share({ title: g.id + " " + (g.morph || ""), url: link }); else { await navigator.clipboard.writeText(link); toast("リンクをコピーしました"); } }
+        catch (x) { if (x?.name !== "AbortError") { try { await navigator.clipboard.writeText(link); toast("リンクをコピーしました"); } catch { toast(link); } } }
+      } else {
+        b.disabled = true;
+        try { await printNow([{ refId: g.id, consign: true }], "sticker", () => logTo("geckos", g.id, "委託用ラベルを印刷")); } catch (x) { toast(x.message); } finally { b.disabled = false; }
+      }
+    };
+  } });
+}
+/* scanning a consignment QR in the app: show what came, and register it as a gecko taken on consignment */
+async function receiveConsign(text) {
+  let o;
+  try { o = await unpackInfo(String(text).split("#d=")[1] || ""); } catch { toast("委託情報を読み取れませんでした"); return; }
+  if (!o || !o.id) { toast("委託情報を読み取れませんでした"); return; }
+  const dup = [...S.geckos.values()].find(g => g.consignSrcId === o.id && g.consignFrom === (o.from || ""));
+  openSheet({ title: "委託情報を受け取る", render: s => {
+    s.body.innerHTML = `
+      <dl class="kv">
+        <dt>委託元</dt><dd>${esc(o.from || "（名前なし）")}</dd>
+        <dt>個体</dt><dd>${sxHTML(o.sx)} <span class="mono">${esc(o.id)}</span> ${esc(mz(o.m) || "")}${o.het ? `<br><span class="muted small">${esc(mz(o.het))}</span>` : ""}</dd>
+        <dt>生年月日</dt><dd>${esc(birthText(o.b) || "不明")}</dd>
+        ${o.cb ? `<dt>ブリーダー</dt><dd>${esc(o.cb)} CB</dd>` : ""}
+        ${o.p != null ? `<dt>販売価格</dt><dd class="mono">${yen(o.p)}${o.fee != null ? ` <span class="muted small">手数料 ${esc(o.fee)}%</span>` : ""}</dd>` : ""}
+        ${o.d ? `<dt>委託日</dt><dd>${esc(o.d)}</dd>` : ""}
+        ${o.note ? `<dt>メモ</dt><dd style="white-space:pre-wrap">${esc(o.note)}</dd>` : ""}
+      </dl>
+      ${dup ? `<div class="infobox">この個体はすでに ${idBtn(dup.id)} として登録されています。</div>` : `<button class="btn primary block big" data-r="add">委託預かりとして登録</button>`}
+      <p class="note">登録すると、自分の台帳に新しいIDで入ります（委託元のIDはメモに残ります）。</p>`;
+    s.body.onclick = async e => {
+      if (!e.target.closest("[data-r]")) return;
+      const b = e.target.closest("[data-r]"); b.disabled = true;
+      try {
+        const g = await createGecko({ breeding: false, forSale: true, sex: o.sx || "不明", morph: o.m || "", het: o.het || "", birthDate: o.b || "", incubTemp: o.inc ?? "", origin: "その他",
+          breeder: o.cb || o.from || "", price: o.p ?? "", status: "販売中", consignFrom: o.from || "", consignSrcId: o.id,
+          notes: ["委託預かり" + (o.from ? "（" + o.from + "）" : ""), "委託元のID " + o.id, o.d ? "委託日 " + o.d : "", o.fee != null ? "手数料 " + o.fee + "%" : "", o.note].filter(Boolean).join("\n") });
+        closeSheet(s); toast(g.id + " として登録しました"); setTimeout(() => openGecko(g.id), 60);
+      } catch (x) { toast(x.message); b.disabled = false; }
+    };
+  } });
 }
 function deathForm(g) {
   openForm({ title: g.id + " を死亡にする", submit: "死亡として記録",
@@ -1871,7 +1982,8 @@ function qrDecode(t) {
 const QR_ICON = '<svg viewBox="0 0 24 24"><path d="M4 8V5a1 1 0 0 1 1-1h3M16 4h3a1 1 0 0 1 1 1v3M20 16v3a1 1 0 0 1-1 1h-3M8 20H5a1 1 0 0 1-1-1v-3M8 9h3v3H8zM13 13h3v3h-3z"/></svg>';
 function qrMake(text) {
   if (!window.qrcode) throw new Error("QRコードの部品を読み込めませんでした。通信を確認して開き直してください");
-  const q = qrcode(0, "M"); q.addData(text); q.make(); return q;
+  /* long contents (the consignment link) use the lighter error correction so the code stays coarse enough to print */
+  const q = qrcode(0, String(text).length > 120 ? "L" : "M"); q.addData(text); q.make(); return q;
 }
 function qrSVG(text) { try { return qrMake(text).createSvgTag({ cellSize: 4, margin: 2, scalable: true }); } catch { return ""; } }
 function drawQR(ctx, text, x, y, size) {
@@ -1929,7 +2041,7 @@ function drawTag(ctx, sp, x, y, w, h) {
   ctx.save();
   ctx.fillStyle = "#fff"; ctx.fillRect(x, y, w, h);
   const pad = Math.round(h * 0.05), qs = Math.round(h * 0.7);
-  drawQR(ctx, qrText(sp.id), x + pad, y + (h - qs) / 2, qs);
+  drawQR(ctx, sp.qr || qrText(sp.id), x + pad, y + (h - qs) / 2, qs);
   const tx = x + qs + pad * 2, tw = w - (tx - x) - pad, bottom = y + h - pad * 0.6;
   let ty = y + pad;
   ctx.fillStyle = "#000"; ctx.textBaseline = "top"; ctx.textAlign = "left";
@@ -2035,6 +2147,8 @@ async function specFor(id, type, q = {}) {
   if (type === "cup") return c === "geckos" ? cupSpec(r, q.packNo) : null;
   if (c === "pairings") { await loadParents([{ sireId: r.sireId }]); return pairSpec(r); }
   if (c === "clutches") return clutchSpec(r);
+  /* a consignment label carries the shareable consignment QR instead of the private one */
+  if (c === "geckos" && q.consign) { const sp = (await geckoSpecs([r]))[0]; return { ...sp, qr: await consignLink(r) }; }
   return c === "eggs" ? eggSpec(r) : c === "geckos" ? (await geckoSpecs([r]))[0] : null;
 }
 /* the frame cannot open the print dialog itself, so printing hands a label-sized PDF to the
@@ -2250,6 +2364,7 @@ async function liveScan(cb) {
       c.width = Math.round(video.videoWidth * sc); c.height = Math.round(video.videoHeight * sc);
       ctx.drawImage(video, 0, 0, c.width, c.height);
       const r = jsQR(ctx.getImageData(0, 0, c.width, c.height).data, c.width, c.height, { inversionAttempts: "dontInvert" });
+      if (r && r.data && isConsignQR(r.data)) { navigator.vibrate?.(30); stop(); scanCb = null; receiveConsign(r.data); return; }
       if (r && r.data) {
         let id = "", why = "台帳のQRコードではありません"; try { id = idFromQR(r.data); } catch (x) { why = x.message; }
         if (id) { navigator.vibrate?.(30); stop(); scanCb = null; try { await cb(id); } catch (x) { toast(x.message); } return; }
@@ -2287,7 +2402,9 @@ $("#scan-file").addEventListener("change", async e => {
   const cb = scanCb || openRecord; scanCb = null;
   toast("読み取っています…");
   try {
-    const txt = await decodeQR(file), id = idFromQR(txt);
+    const txt = await decodeQR(file);
+    if (isConsignQR(txt)) { $("#toast").hidden = true; return receiveConsign(txt); }
+    const id = idFromQR(txt);
     if (!txt) throw new Error("QRコードが見つかりません。明るい所で、QRを大きめに撮ってください");
     if (!id) throw new Error("台帳のQRコードではありません");
     $("#toast").hidden = true;
@@ -2764,6 +2881,7 @@ function openGecko(id) {
       <div class="hero">${sxHTML(g.sex)}<span class="midid">${esc(g.id)}</span>${pill(g.status)}${gradeHTML(g.grade)}<span class="muted small" style="margin-left:auto">${esc(useLabel(g))}</span></div>
       ${top}
       <button class="btn block" data-ask style="margin:8px 0">💬 この個体についてチャットで聞く</button>
+      ${done ? "" : g.status === "委託中" ? `<div class="botacts" style="margin:0 0 8px"><button class="btn abtn" data-q="cinfo">委託情報（QR）</button><button class="btn abtn" data-q="cback">委託から戻す</button></div>` : `<button class="btn block" data-q="consign" style="margin:0 0 8px">委託に出す</button>`}
       ${photoStrip(g, !done)}
       <dl class="kv">
         <dt>モルフ</dt><dd>${esc(mz(g.morph) || "—")}${sale ? `<br><span class="muted small">${esc(morphEnOf(g))}</span>` : ""}</dd>
@@ -2774,6 +2892,8 @@ function openGecko(id) {
         ${g.name ? `<dt>呼び名</dt><dd>${esc(g.name)}</dd>` : ""}
         <dt>生年月日</dt><dd class="num">${esc(birthText(g.birthDate) || "不明")} <span class="muted small">${esc(age(g.birthDate))}</span></dd>
         <dt>孵化温度</dt><dd class="num">${g.incubTemp ? esc(g.incubTemp) + "℃" : "—"}</dd>
+        ${g.status === "委託中" ? `<dt>委託先</dt><dd>${esc(g.consignee || "—")} · ${esc(g.consignDate || "")}${g.consignPrice != null ? " · " + yen(g.consignPrice) : ""}${g.consignFee != null ? `<span class="muted small"> 手数料${esc(g.consignFee)}%</span>` : ""}</dd>` : ""}
+        ${g.consignFrom || g.consignSrcId ? `<dt>委託預かり</dt><dd>${esc(g.consignFrom || "")}${g.consignSrcId ? ` <span class="muted small">（委託元のID ${esc(g.consignSrcId)}）</span>` : ""}</dd>` : ""}
         <dt>由来</dt><dd>${esc(g.origin || "—")}${cbText(g) ? " · " + esc(cbText(g)) : ""}${g.purchasePrice != null ? " · 購入 " + yen(g.purchasePrice) : ""}</dd>
         <dt>父 × 母</dt><dd>${idBtn(g.sireId)} × ${idBtn(g.damId)}</dd>
         ${g.eggId ? `<dt>卵</dt><dd>${idBtn(g.eggId)} ${g.clutchId ? "· " + idBtn(g.clutchId) : ""}</dd>` : ""}
@@ -2805,6 +2925,9 @@ function openGecko(id) {
         try { const r = await deleteGecko(g.id); closeSheet(s); toast(r.id + " を削除しました" + (r.with?.length ? "（ペアリング・産卵 " + r.with.length + "件も一緒に）" : "") + (r.eggBack ? "（卵は孵卵中に戻しました）" : "") + "。設定の「削除したデータ」から24時間は復活できます"); } catch (x) { toast(x.message); draw(s); }
         return;
       }
+      if (q === "consign") return consignForm(g);
+      if (q === "cinfo") return consignSheet(g.id);
+      if (q === "cback") { if (!confirm(g.id + " を委託から戻しますか？（販売中に戻ります）")) return; try { await unconsignGecko(g.id); toast(g.id + " を委託から戻しました"); draw(s); } catch (x) { toast(x.message); } return; }
       if (q === "edit") editGeckoForm(g); else if (q === "sell") sellForm(g); else if (q === "dead") deathForm(g);
       else if (q === "photo") pickPhoto(g.id, "lib");
       else if (q === "photo-cam") pickPhoto(g.id, "cam");
@@ -3514,7 +3637,7 @@ $("#chat-in").addEventListener("keydown", e => { if (e.key === "Enter" && (e.met
 document.addEventListener("keydown", e => { if (e.key === "Escape" && sheets.length) closeSheet(sheets[sheets.length - 1]); });
 
 /* ---------- app: budget / backup strip, settings, automatic backup, updates ---------- */
-const APP_VERSION = "2026-11-09-4";
+const APP_VERSION = "2026-11-09-5";
 const fmtGB = b => (b / 1e9).toFixed(b >= 1e10 ? 0 : 1) + "GB";
 const fmtTime = t => t ? new Date(t).toLocaleString("ja-JP", { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" }) : "まだありません";
 function setPill(el, { val, ratio, state }) {

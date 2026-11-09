@@ -1,0 +1,71 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="robots" content="noindex">
+<title>委託個体の情報</title>
+<style>
+:root { --bg:#f4f9fd; --card:#fff; --ink:#14303f; --sub:#5c7685; --line:#d6e9f3; --accent:#36a9de; --soft:#ddf1fb; }
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) { --bg:#0d1a22; --card:#13242f; --ink:#e5f2f8; --sub:#8eaab9; --line:#22394a; --accent:#5cc3ef; --soft:#163e52; } }
+:root[data-theme="dark"] { --bg:#0d1a22; --card:#13242f; --ink:#e5f2f8; --sub:#8eaab9; --line:#22394a; --accent:#5cc3ef; --soft:#163e52; }
+* { box-sizing:border-box; }
+html, body { margin:0; background:var(--bg); color:var(--ink); font:16px/1.6 -apple-system, "Hiragino Sans", "Noto Sans JP", sans-serif; }
+main { max-width:520px; margin:0 auto; padding:20px 16px calc(32px + env(safe-area-inset-bottom)); display:flex; flex-direction:column; gap:14px; }
+h1 { font-size:20px; margin:0; }
+.card { background:var(--card); border:1px solid var(--line); border-radius:14px; padding:16px; }
+.id { font:700 26px ui-monospace, Menlo, monospace; }
+.morph { font-size:20px; font-weight:700; margin-top:4px; overflow-wrap:anywhere; }
+.en, .note { color:var(--sub); font-size:14px; overflow-wrap:anywhere; }
+dl { display:grid; grid-template-columns:auto 1fr; gap:6px 14px; margin:14px 0 0; }
+dt { color:var(--sub); font-size:14px; }
+dd { margin:0; overflow-wrap:anywhere; }
+.price { font:600 20px ui-monospace, Menlo, monospace; }
+.hint { background:var(--soft); border-radius:12px; padding:12px 14px; font-size:14px; }
+</style>
+</head>
+<body>
+<main>
+  <h1>委託個体の情報</h1>
+  <div id="out" class="card"><p class="note">読み込み中…</p></div>
+  <div class="hint">Breed Managerをお使いの方は、アプリ右上のQRボタンでこのQRを読み取ると、委託預かりの個体として自分の台帳に登録できます。</div>
+</main>
+<script>
+/* the consignment info travels in the link itself (#d=…, deflated JSON); nothing is fetched or stored */
+const $ = s => document.querySelector(s);
+const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+const fromB64url = s => { const b = atob(s.replace(/-/g, "+").replace(/_/g, "/")); return Uint8Array.from(b, c => c.charCodeAt(0)); };
+const yen = v => v == null || v === "" ? "" : "¥" + Number(v).toLocaleString("ja-JP");
+const birth = b => !b ? "不明" : /^\d{4}$/.test(b) ? b + "年（年のみ）" : /^\d{4}-\d{2}$/.test(b) ? b.replace("-", "年") + "月" : b.replace(/-/g, ".");
+async function show() {
+  const m = location.hash.match(/#d=(.+)$/);
+  if (!m) { $("#out").innerHTML = `<p class="note">情報が見つかりません。QRをもう一度読み取ってください。</p>`; return; }
+  try {
+    const s = m[1]; let u = fromB64url(s.slice(1));
+    if (s[0] === "1") u = new Uint8Array(await new Response(new Blob([u]).stream().pipeThrough(new DecompressionStream("deflate-raw"))).arrayBuffer());
+    const j = JSON.parse(new TextDecoder().decode(u)), KEYS = ["id", "sx", "m", "het", "b", "cb", "p", "fee", "from", "d", "note"];
+    const o = Array.isArray(j) && j[0] === "c1" ? Object.fromEntries(KEYS.map((k, i) => [k, j[i + 1] ?? (k === "p" || k === "fee" ? null : "")])) : j;
+    const sex = o.sx === "♂" ? "♂ オス" : o.sx === "♀" ? "♀ メス" : "性別不明";
+    $("#out").innerHTML = `
+      <div class="id">${esc(o.id)}</div>
+      <div class="morph">${esc(o.m || "モルフ未入力")}</div>${o.en && o.en !== o.m ? `<div class="en">${esc(o.en)}</div>` : ""}${o.het ? `<div class="en">${esc(o.het)}</div>` : ""}
+      <dl>
+        <dt>性別</dt><dd>${sex}</dd>
+        <dt>生年月日</dt><dd>${esc(birth(o.b))}</dd>
+        ${o.inc !== "" && o.inc != null ? `<dt>孵化温度</dt><dd>${esc(o.inc)}℃</dd>` : ""}
+        ${o.cb ? `<dt>ブリーダー</dt><dd>${esc(o.cb)} CB</dd>` : ""}
+        ${o.p != null ? `<dt>販売価格</dt><dd class="price">${yen(o.p)}</dd>` : ""}
+        ${o.fee != null && o.fee !== "" ? `<dt>手数料</dt><dd>${esc(o.fee)}%</dd>` : ""}
+        ${o.from ? `<dt>委託元</dt><dd>${esc(o.from)}</dd>` : ""}
+        ${o.to ? `<dt>委託先</dt><dd>${esc(o.to)}</dd>` : ""}
+        ${o.d ? `<dt>委託日</dt><dd>${esc(o.d.replace(/-/g, "."))}</dd>` : ""}
+        ${o.note ? `<dt>メモ</dt><dd style="white-space:pre-wrap">${esc(o.note)}</dd>` : ""}
+      </dl>`;
+    document.title = o.id + " " + (o.m || "") + "｜委託個体の情報";
+  } catch { $("#out").innerHTML = `<p class="note">情報を読み取れませんでした。QRをもう一度読み取ってください。</p>`; }
+}
+show();
+window.addEventListener("hashchange", show);
+</script>
+</body>
+</html>
