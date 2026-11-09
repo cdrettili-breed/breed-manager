@@ -434,6 +434,13 @@ const setPref = (k, v) => {
   if (S.db) saveMeta("settings", { prefs: S.settings.prefs }).catch(e => console.warn("prefs", e));
 };
 /* first run of this version: copy switches set before into settings, once */
+/* the key that makes this ledger's QR codes readable only here; made once and kept in settings (and so in backups) */
+function ensureQrKey() {
+  if (!S.db || S.settings.qrKey) return;
+  const k = b64url(crypto.getRandomValues(new Uint8Array(18)));
+  S.settings.qrKey = k;
+  saveMeta("settings", { qrKey: k }).catch(e => console.warn("qrKey", e));
+}
 function migratePrefs() {
   if (!S.db || (S.settings.prefs && S.settings.prefs._v)) return;
   const prefs = { ...(S.settings.prefs || {}), _v: 1 };
@@ -1457,7 +1464,7 @@ function subscribe(db) {
   db.doc("meta/lines").onSnapshot(snap => { S.lines = snap.exists ? (snap.data().items || []) : []; schedule(); }, onErr);
   db.doc("meta/morphs").onSnapshot(snap => { applyMorphs(snap.exists ? snap.data() : null); schedule(); }, onErr);
   let prefsChecked = false;
-  db.doc("meta/settings").onSnapshot(snap => { S.settings = snap.exists ? snap.data() : {}; if (!prefsChecked) { prefsChecked = true; migratePrefs(); } schedule(); }, onErr);
+  db.doc("meta/settings").onSnapshot(snap => { S.settings = snap.exists ? snap.data() : {}; if (!prefsChecked) { prefsChecked = true; migratePrefs(); ensureQrKey(); } schedule(); }, onErr);
   db.doc("public/catalog").onSnapshot(snap => { S.catalog = snap.exists ? { items: [], ...snap.data() } : { items: [] }; schedule(); if (catalogMode) renderCatalogPage(); }, onErr);
   db.doc("public/shop").onSnapshot(snap => { S.shop = snap.exists ? { items: [], ...snap.data() } : { items: [] }; schedule(); }, onErr);
   db.doc("meta/packing").onSnapshot(snap => { S.packing = snap.exists ? { items: [], ...snap.data() } : { items: [] }; schedule(); }, onErr);
@@ -1793,7 +1800,34 @@ function addMenu() {
 
 /* ---------- QR ---------- */
 const ART_URL = "https://cdrettili-breed.github.io/breed-manager/";
-const qrText = id => ART_URL + "#" + id;
+/* QR contents: "BMQ1" + base64url(4 random bytes + the ID and a 2-byte check, mixed with a stream from this ledger's
+   key). Only an app holding the key (meta/settings.qrKey, kept in backups) can read it; a phone camera or another
+   person's app shows a meaningless code. Older labels (app URL + #ID, or the bare ID) still scan. */
+const fnv = s => { let h = 0x811c9dc5; for (const c of String(s)) { h ^= c.charCodeAt(0); h = Math.imul(h, 0x01000193) >>> 0; } return h >>> 0; };
+function qrStream(seed, n) {
+  let a = seed >>> 0; const out = new Uint8Array(n);
+  for (let i = 0; i < n; i++) { a = (a + 0x6D2B79F5) >>> 0; let t = a; t = Math.imul(t ^ (t >>> 15), t | 1); t ^= t + Math.imul(t ^ (t >>> 7), t | 61); out[i] = ((t ^ (t >>> 14)) >>> 0) & 255; }
+  return out;
+}
+const qrKey = () => (S.settings && S.settings.qrKey) || "";
+function qrText(id) {
+  const k = qrKey(); if (!k) return ART_URL + "#" + id;
+  const nonce = crypto.getRandomValues(new Uint8Array(4)), seed = fnv(k) ^ new DataView(nonce.buffer).getUint32(0);
+  const body = [...new TextEncoder().encode(id)], chk = fnv(k + "|" + id); body.push(chk >>> 8 & 255, chk & 255);
+  const ks = qrStream(seed, body.length), out = new Uint8Array(4 + body.length);
+  out.set(nonce); body.forEach((b, i) => { out[4 + i] = b ^ ks[i]; });
+  return "BMQ1" + b64url(out);
+}
+/* null: not this kind of code; "": a code of another ledger (or damaged) */
+function qrDecode(t) {
+  if (!String(t).startsWith("BMQ1")) return null;
+  const k = qrKey(); if (!k) return "";
+  let u; try { u = b64uBytes(String(t).slice(4)); } catch { return ""; }
+  if (u.length < 7) return "";
+  const seed = fnv(k) ^ new DataView(u.buffer, u.byteOffset, 4).getUint32(0), ks = qrStream(seed, u.length - 4);
+  const body = u.slice(4).map((b, i) => b ^ ks[i]), id = new TextDecoder().decode(body.slice(0, -2)), chk = fnv(k + "|" + id);
+  return body[body.length - 2] === (chk >>> 8 & 255) && body[body.length - 1] === (chk & 255) ? id : "";
+}
 const QR_ICON = '<svg viewBox="0 0 24 24"><path d="M4 8V5a1 1 0 0 1 1-1h3M16 4h3a1 1 0 0 1 1 1v3M20 16v3a1 1 0 0 1-1 1h-3M8 20H5a1 1 0 0 1-1-1v-3M8 9h3v3H8zM13 13h3v3h-3z"/></svg>';
 function qrMake(text) {
   if (!window.qrcode) throw new Error("QRコードの部品を読み込めませんでした。通信を確認して開き直してください");
@@ -1897,7 +1931,7 @@ const cupSpec = (g, no) => ({ id: g.id, no: no ?? "", temp: g.incubTemp != null 
 function drawCup(ctx, sp, W, H) {
   ctx.save(); ctx.fillStyle = "#fff"; ctx.fillRect(0, 0, W, H);
   const pad = Math.round(H * 0.05), qs = Math.round(H * 0.74), rx = pad * 2 + qs, rw = W - rx - pad;
-  drawQR(ctx, sp.id, pad, (H - qs) / 2, qs);
+  drawQR(ctx, qrText(sp.id), pad, (H - qs) / 2, qs);
   ctx.fillStyle = "#000"; ctx.textBaseline = "top"; ctx.textAlign = "left";
   const no = String(sp.no ?? "");
   let ty = pad;
@@ -2102,7 +2136,8 @@ function queueSheet(startType) {
       <div class="qtabs" role="group" aria-label="印刷の種類">${Object.entries(QTYPES).map(([t, l]) => `<button data-qt="${t}" aria-pressed="${t === type}">${l}（${n(t)}）</button>`).join("")}</div>
       ${printed ? `<div class="infobox">印刷できたら、印刷した${printed.length}枚を待ちリストから消してください。${type === "card" ? "育成中の個体は販売中になります。" : ""}<div class="quick" style="margin:8px 0 0"><button class="btn primary sm" data-qa="done">印刷できた（${printed.length}枚）</button><button class="btn sm" data-qa="keep">消さずに残す</button></div></div>` : ""}
       ${items.length ? `${printBtn}
-        <div class="list" style="margin-top:12px">${items.map(q => `<div class="row r3"><button class="idlink rid" data-open="${esc(q.refId)}">${esc(q.refId)}</button><span class="rmain"><span class="rmorph">${q.packNo ? `<b class="mono">No.${esc(q.packNo)}</b> ` : ""}${esc(queueSummary(q.refId))}</span></span><button class="btn sm" data-qdel="${esc(q.k)}" aria-label="${esc(q.refId)} を外す">外す</button></div>`).join("")}</div>`
+        <div class="list" style="margin-top:12px">${items.map(q => `<div class="row r3"><button class="idlink rid" data-open="${esc(q.refId)}">${esc(q.refId)}</button><span class="rmain"><span class="rmorph">${q.packNo ? `<b class="mono">No.${esc(q.packNo)}</b> ` : ""}${esc(queueSummary(q.refId))}</span></span><button class="btn sm" data-qdel="${esc(q.k)}" aria-label="${esc(q.refId)} を外す">外す</button></div>`).join("")}</div>
+        <button class="btn block danger" data-qa="clearall" style="margin-top:10px">${QTYPES[type]}の印刷待ちをすべて外す（${items.length}件）</button>`
         : `<div class="empty">${QTYPES[type]}の印刷待ちはありません。</div>`}
       ${type === "sticker" ? `<label class="toggle" style="margin-top:14px;align-items:flex-start"><input type="checkbox" id="q-auto" ${autoQueue() ? "checked" : ""}>ペアリング・産卵・孵化・個体登録のたびに、ラベルを自動で印刷待ちに追加する</label>`
         : `<p class="note" style="margin-top:14px">${type === "cup" ? "カップラベルはパッキングモードから追加します。番号順に印刷します。" : "名刺は、個体の画面の「名刺」かパッキングモードから追加します。"}</p>`}
@@ -2118,6 +2153,12 @@ function queueSheet(startType) {
       const a = e.target.closest("[data-qa]"); if (!a) return;
       const act = a.dataset.qa;
       if (act === "keep") { printed = null; draw(s); return; }
+      if (act === "clearall") {
+        const keys = [...S.queue.entries()].filter(([, q]) => qType(q) === type).map(([k]) => k);
+        if (!keys.length || !confirm(QTYPES[type] + "の印刷待ち " + keys.length + "件をすべて外しますか？\n（個体や記録は消えません。印刷待ちのリストから外すだけです）")) return;
+        try { await queueRemove(keys); printed = null; toast(keys.length + "件を印刷待ちから外しました"); draw(s); } catch (x) { toast(x.message); }
+        return;
+      }
       if (act === "b1go" || act === "b1fresh") {
         /* the copy has to finish before iOS switches apps, so the switch to the open Bluefy page waits for it */
         if (act === "b1go" && prep.j && b1TabOpen()) { e.preventDefault(); b1Go(prep.j); }
@@ -2169,9 +2210,9 @@ async function liveScan(cb) {
       ctx.drawImage(video, 0, 0, c.width, c.height);
       const r = jsQR(ctx.getImageData(0, 0, c.width, c.height).data, c.width, c.height, { inversionAttempts: "dontInvert" });
       if (r && r.data) {
-        const id = idFromQR(r.data);
+        let id = "", why = "台帳のQRコードではありません"; try { id = idFromQR(r.data); } catch (x) { why = x.message; }
         if (id) { navigator.vibrate?.(30); stop(); scanCb = null; try { await cb(id); } catch (x) { toast(x.message); } return; }
-        if (r.data !== lastBad) { lastBad = r.data; msg.textContent = "台帳のQRコードではありません"; }
+        if (r.data !== lastBad) { lastBad = r.data; msg.textContent = why; }
       }
     }
     timer = setTimeout(tick, 140);
@@ -2194,6 +2235,8 @@ async function decodeQR(file) {
 }
 function idFromQR(t) {
   if (!t) return "";
+  const own = qrDecode(String(t).trim());
+  if (own !== null) { if (!own) throw new Error("このQRは別の台帳のもの（または読み取れない）です"); return ID_RE.test(own) ? own : ""; }
   let h = String(t); if (h.includes("#")) h = h.split("#").pop();
   try { h = decodeURIComponent(h); } catch {}
   const id = normId(h); return ID_RE.test(id) ? id : "";
@@ -3430,7 +3473,7 @@ $("#chat-in").addEventListener("keydown", e => { if (e.key === "Enter" && (e.met
 document.addEventListener("keydown", e => { if (e.key === "Escape" && sheets.length) closeSheet(sheets[sheets.length - 1]); });
 
 /* ---------- app: budget / backup strip, settings, automatic backup, updates ---------- */
-const APP_VERSION = "2026-10-26-4";
+const APP_VERSION = "2026-11-09-1";
 const fmtGB = b => (b / 1e9).toFixed(b >= 1e10 ? 0 : 1) + "GB";
 const fmtTime = t => t ? new Date(t).toLocaleString("ja-JP", { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" }) : "まだありません";
 function setPill(el, { val, ratio, state }) {
