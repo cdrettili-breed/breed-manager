@@ -2100,8 +2100,9 @@ function drawCup(ctx, sp, W, H) {
    which items, morph language, QR side, shop name, logo, footer and a note after the price. Everything is sized in
    fractions of the card, so any size draws the same way; the PDF uses about 300 dpi. */
 const CARD_DEF = { w: 91, h: 55, lang: "en", qr: "right", shop: "", footer: "", priceNote: "", logo: "",
-  items: { id: true, sex: true, morph: true, het: false, price: true, birth: true, temp: false, cb: false } };
-const cardCfg = () => { const c = (S.settings && S.settings.card) || {}; return { ...CARD_DEF, ...c, items: { ...CARD_DEF.items, ...(c.items || {}) } }; };
+  items: { id: true, sex: true, morph: true, het: false, price: true, birth: true, temp: false, cb: false },
+  print: { portrait: true, dx: 0, dy: 0 } };
+const cardCfg = () => { const c = (S.settings && S.settings.card) || {}; return { ...CARD_DEF, ...c, items: { ...CARD_DEF.items, ...(c.items || {}) }, print: { ...CARD_DEF.print, ...(c.print || {}) } }; };
 const cardMM = () => { const c = cardCfg(); return [Math.min(150, Math.max(30, Number(c.w) || 91)), Math.min(150, Math.max(30, Number(c.h) || 55))]; };
 const cardPX = () => cardMM().map(v => Math.round(v * 11.81));
 /* the logo is kept as a small image in the settings (so it is in backups); drawn once it has loaded */
@@ -2236,6 +2237,13 @@ function cardSettingsSheet() {
           <input type="file" id="c-logo-file" accept="image/*" hidden><p class="note" style="margin:0">店名の左に入ります。白い背景のロゴがきれいに出ます。</p></div>
         <div class="field"><label for="c-note">価格の後ろに付ける文字</label><input id="c-note" value="${esc(c.priceNote)}" placeholder="任意（例 税込）" autocomplete="off"></div>
         <div class="field"><label for="c-footer">一番下の文字</label><input id="c-footer" value="${esc(c.footer)}" placeholder="任意（例 Instagram @〇〇）" autocomplete="off"></div>
+        <div class="field"><label>印刷（名刺用紙に直接）</label>
+          ${seg("c-portrait", [["1", "名刺用紙を縦に差す"], ["0", "横のまま"]], c.print.portrait ? "1" : "0")}
+          <p class="note" style="margin:0">多くのプリンター（Canon TR703aなど）は名刺用紙を縦向きで送るので「縦に差す」にします。</p>
+          <div class="idrow" style="margin-top:6px"><label for="c-dx" style="align-self:center;white-space:nowrap">左右</label><input id="c-dx" inputmode="decimal" value="${esc(c.print.dx)}" aria-label="左右のずれ（mm）"><label for="c-dy" style="align-self:center;white-space:nowrap">上下</label><input id="c-dy" inputmode="decimal" value="${esc(c.print.dy)}" aria-label="上下のずれ（mm）"><span style="align-self:center">mm</span></div>
+          <p class="note" style="margin:0">印刷がずれるときだけ。＋で右・下へ、−で左・上へ動きます（例 1.5）。</p>
+          <button type="button" class="btn" data-c="test" style="align-self:flex-start;margin-top:6px">1枚だけテスト印刷</button>
+          <p class="note" style="margin:0">iPhoneの印刷画面でプリンターを選び、用紙サイズを「名刺」にしてください。名刺用紙は後トレイに縦向き・印刷する面を上にして入れます。</p></div>
         <button type="button" class="btn sm" data-c="reset" style="align-self:flex-start">最初の内容に戻す</button>
       </div>`;
     preview(s);
@@ -2249,6 +2257,8 @@ function cardSettingsSheet() {
       else if (t.dataset.item) await put({ items: { ...cardCfg().items, [t.dataset.item]: t.checked } });
       else if (t.name === "c-lang") await put({ lang: t.value });
       else if (t.name === "c-qr") await put({ qr: t.value });
+      else if (t.name === "c-portrait") await put({ print: { ...cardCfg().print, portrait: t.value === "1" } });
+      else if (t.id === "c-dx" || t.id === "c-dy") { const v = toNum(t.value) ?? 0; if (Math.abs(v) > 10) { toast("ずれは −10〜10mm で入れてください"); return; } await put({ print: { ...cardCfg().print, [t.id === "c-dx" ? "dx" : "dy"]: v } }); toast("印刷位置を保存しました"); return; }
       else if (t.id === "c-shop") await put({ shop: t.value.trim() });
       else if (t.id === "c-note") await put({ priceNote: t.value.trim() });
       else if (t.id === "c-footer") await put({ footer: t.value.trim() });
@@ -2275,6 +2285,7 @@ function cardSettingsSheet() {
       const b = e.target.closest("[data-c]"); if (!b) return;
       if (b.dataset.c === "logo") $("#c-logo-file", s.body).click();
       else if (b.dataset.c === "nologo") { await put({ logo: "" }); draw(s); }
+      else if (b.dataset.c === "test") { b.disabled = true; try { await ensureCardLogo(); await saveFile("名刺_テスト_" + today() + ".pdf", toPdf([cardSpec(sample())], "card")); } catch (x) { toast(x.message); } finally { b.disabled = false; } }
       else if (b.dataset.c === "ai") { if (!S.hasKey) { toast("設定でClaudeのAPIキーを入れると使えます"); return; } $("#c-photo", s.body).click(); }
       else if (b.dataset.c === "reset") { if (!confirm("名刺の設定を最初の内容に戻しますか？")) return; S.settings.card = { ...CARD_DEF }; await saveMeta("settings", { card: { ...CARD_DEF } }); draw(s); toast("最初の内容に戻しました"); }
     });
@@ -2295,9 +2306,18 @@ function renderCanvas(sp, type, out) {
 }
 function toPdf(specs, type) {
   const J = window.jspdf && window.jspdf.jsPDF; if (!J) throw new Error("PDFの部品を読み込めませんでした");
-  const [mw, mh] = type === "card" ? cardMM() : type === "cup" ? CUP_MM : TAG_MM, orient = mw >= mh ? "landscape" : "portrait";
-  const pdf = new J({ unit: "mm", format: [mw, mh], orientation: orient, compress: true });
-  specs.forEach((sp, i) => { if (i) pdf.addPage([mw, mh], orient); pdf.addImage(renderCanvas(sp, type).toDataURL("image/jpeg", 0.95), "JPEG", 0, 0, mw, mh); });
+  const [mw, mh] = type === "card" ? cardMM() : type === "cup" ? CUP_MM : TAG_MM;
+  /* business cards printed straight onto card stock: the printer feeds the card in portrait (55×91), so a landscape
+     card is turned onto a portrait page; dx / dy nudge it to correct the printer's offset */
+  const cp = type === "card" ? cardCfg().print : null, turn = !!(cp && cp.portrait && mw > mh);
+  const [pw, ph] = turn ? [mh, mw] : [mw, mh], orient = pw >= ph ? "landscape" : "portrait", dx = cp ? Number(cp.dx) || 0 : 0, dy = cp ? Number(cp.dy) || 0 : 0;
+  const pdf = new J({ unit: "mm", format: [pw, ph], orientation: orient, compress: true });
+  specs.forEach((sp, i) => {
+    if (i) pdf.addPage([pw, ph], orient);
+    let cv = renderCanvas(sp, type);
+    if (turn) { const r = document.createElement("canvas"); r.width = cv.height; r.height = cv.width; const x = r.getContext("2d"); x.translate(r.width, 0); x.rotate(Math.PI / 2); x.drawImage(cv, 0, 0); cv = r; }
+    pdf.addImage(cv.toDataURL("image/jpeg", 0.95), "JPEG", dx, dy, pw, ph);
+  });
   return pdf.output("blob");
 }
 async function saveFile(name, blob) {
@@ -3822,7 +3842,7 @@ $("#chat-in").addEventListener("keydown", e => { if (e.key === "Enter" && (e.met
 document.addEventListener("keydown", e => { if (e.key === "Escape" && sheets.length) closeSheet(sheets[sheets.length - 1]); });
 
 /* ---------- app: budget / backup strip, settings, automatic backup, updates ---------- */
-const APP_VERSION = "2026-11-09-8";
+const APP_VERSION = "2026-11-09-9";
 const fmtGB = b => (b / 1e9).toFixed(b >= 1e10 ? 0 : 1) + "GB";
 const fmtTime = t => t ? new Date(t).toLocaleString("ja-JP", { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" }) : "まだありません";
 function setPill(el, { val, ratio, state }) {
