@@ -2208,20 +2208,22 @@ function drawOverlay(ctx, sp, W, H) {
       /* a card with one blank per parent gets the parent's het in that blank too */
       const t = (k === "sire" || k === "dam") && !boxes[k + "Het"].on ? [raw[k], raw[k + "Het"]].filter(Boolean).join("  ") : raw[k];
       if (t) {
-        /* the value fills its box: one line as large as the height allows, two lines when the box is tall and the text long */
+        /* the value fills its box as large as it can while every character stays inside: the size goes down step by step,
+           using as many lines (up to 3) as the height allows at that size, until nothing is cut off or squeezed */
         const mono = ["id", "price", "birth"].includes(k), font = s => `${k === "id" || k === "morph" || k === "price" ? 700 : 500} ${s}px ${mono ? LMONO : LJP}`;
-        const maru = t === "〇", full = Math.round(h * (maru ? 1.05 : 0.78));
-        ctx.font = font(full);
-        /* one line: as big as the height allows, smaller if it is too wide (lines may still be squeezed to 80%) */
-        let fs = Math.max(8, Math.min(full, Math.floor(full * (w / 0.8) / ctx.measureText(t).width))), lines = [t];
-        /* two lines when that gives bigger text */
-        const two = Math.round(h * 0.42);
-        if (fs < two) { ctx.font = font(two); const l2 = wrapLines(ctx, t, w / 0.8, 2); if (l2.length === 2 && !l2[1].endsWith("…")) { fs = two; lines = l2; } }
+        const maru = t === "〇", full = Math.max(4, Math.round(h * (maru ? 1.05 : 0.8)));
+        let fs = full, lines = [t];
+        for (; fs > 4; fs = Math.max(4, Math.floor(fs * 0.95))) {
+          ctx.font = font(fs);
+          const n = Math.max(1, Math.min(3, Math.floor(h / (fs * 1.15))));
+          const l = n === 1 ? [t] : wrapLines(ctx, t, w, n);
+          if (l.every(x => ctx.measureText(x).width <= w) && !(l[l.length - 1].endsWith("…") && !t.endsWith("…")) && l.join("").replace(/\s/g, "").length >= t.replace(/\s/g, "").length) { lines = l; break; }
+        }
         ctx.font = font(fs);
         /* the morph sits in the middle of its blank, the own-bred 〇 at the right end (next to the card's 産地) */
         const align = k === "morph" ? "center" : maru ? "right" : "left", ax = align === "center" ? x + w / 2 : align === "right" ? x + w : x;
         ctx.textAlign = align;
-        lines.forEach((l, i) => ctx.fillText(l, ax, y + h / 2 + (i - (lines.length - 1) / 2) * fs * 1.12, w));
+        lines.forEach((l, i) => ctx.fillText(l, ax, y + h / 2 + (i - (lines.length - 1) / 2) * fs * 1.12));
         ctx.textAlign = "left";
       } else if (ovlPreview) {
         /* nothing to write for the sample gecko: the item's name in grey, so the box can still be placed */
@@ -2268,10 +2270,12 @@ function drawCard(ctx, sp, W, H) {
     const top = pad + (head ? F.shop + f(0.04) : 0) + (sp.id ? F.id * 1.08 : 0) + (sp.sex ? F.sex * 1.3 : 0);
     const bottom = base - (c.footer ? F.foot * 1.35 : 0) - (meta ? F.meta * 1.35 : 0) - (sp.origin ? F.meta * 1.35 : 0) - (sp.price ? F.price * 1.3 : 0);
     const lay = mrows.map(r => { const fs = f(r.k); ctx.font = `${r.b ? 700 : 500} ${fs}px ${LJP}`; return { r, fs, lines: wrapLines(ctx, r.t, tw / 0.85, r.n) }; });
-    return { F, top, bottom, lay, ok: lay.reduce((a, x) => a + x.lines.length * x.fs * 1.2 + (x.r.gap || 0) * x.fs, 0) <= bottom - top };
+    /* a row that had to end in "…" does not fit either: nothing on the card is cut off */
+    const cut = lay.some(x => x.lines[x.lines.length - 1].endsWith("…") && !x.r.t.endsWith("…"));
+    return { F, top, bottom, lay, ok: !cut && lay.reduce((a, x) => a + x.lines.length * x.fs * 1.2 + (x.r.gap || 0) * x.fs, 0) <= bottom - top };
   };
   let P = plan(1);
-  for (let sc = 0.95; !P.ok && sc >= 0.5; sc -= 0.05) P = plan(sc);
+  for (let sc = 0.95; !P.ok && sc >= 0.3; sc -= 0.05) P = plan(sc);
   const F = P.F;
   /* top block: logo and shop name, ID, sex */
   let ty = pad;
@@ -4046,7 +4050,7 @@ $("#chat-in").addEventListener("keydown", e => { if (e.key === "Enter" && (e.met
 document.addEventListener("keydown", e => { if (e.key === "Escape" && sheets.length) closeSheet(sheets[sheets.length - 1]); });
 
 /* ---------- app: budget / backup strip, settings, automatic backup, updates ---------- */
-const APP_VERSION = "2026-11-09-19";
+const APP_VERSION = "2026-11-09-20";
 const fmtGB = b => (b / 1e9).toFixed(b >= 1e10 ? 0 : 1) + "GB";
 const fmtTime = t => t ? new Date(t).toLocaleString("ja-JP", { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" }) : "まだありません";
 function setPill(el, { val, ratio, state }) {
