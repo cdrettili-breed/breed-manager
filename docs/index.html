@@ -1779,8 +1779,13 @@ function geckoFields(mode, cur = {}) {
     { k: "locality", label: "産地（名刺に印刷）", ph: "例 国内CB・アメリカ", chips: frequentLocalities(), hist: frequentLocalities(Infinity), showIf: v => v.origin !== "自家繁殖" },
     { k: "purchasePrice", label: "購入価格（円）", type: "number", ph: "例 15000", chips: ["5000", "10000", "15000", "20000", "30000", "50000"], showIf: v => v.origin !== "自家繁殖" },
     { k: "notes", label: "メモ", type: "textarea", ph: "任意" },
-    { k: "sireId", label: "父", type: "select", scan: "♂", options: parentOptions("♂").concat(cur.sireId && !S.geckos.has(cur.sireId) ? [[cur.sireId, cur.sireId]] : []), adv: true },
-    { k: "damId", label: "母", type: "select", scan: "♀", options: parentOptions("♀").concat(cur.damId && !S.geckos.has(cur.damId) ? [[cur.damId, cur.damId]] : []), adv: true },
+    { k: "sireId", label: "父", type: "select", scan: "♂", options: parentOptions("♂").concat(cur.sireId && !S.geckos.has(cur.sireId) ? [[cur.sireId, cur.sireId]] : []), adv: true, showIf: v => v.origin !== "購入" },
+    { k: "damId", label: "母", type: "select", scan: "♀", options: parentOptions("♀").concat(cur.damId && !S.geckos.has(cur.damId) ? [[cur.damId, cur.damId]] : []), adv: true, showIf: v => v.origin !== "購入" },
+    /* a bought gecko's parents are not in this ledger: they start blank and are written in (they go on the price card) */
+    { k: "sireMorph", label: "父のモルフ（購入元から聞いたもの）", ph: "入力すると候補が出ます", ac: true, pick: true, adv: true, showIf: v => v.origin === "購入" },
+    { k: "sireHet", label: "父のhet", type: "het", adv: true, showIf: v => v.origin === "購入" },
+    { k: "damMorph", label: "母のモルフ（購入元から聞いたもの）", ph: "入力すると候補が出ます", ac: true, pick: true, adv: true, showIf: v => v.origin === "購入" },
+    { k: "damHet", label: "母のhet", type: "het", adv: true, showIf: v => v.origin === "購入" },
     tempField(true, cur.incubTemp),
     { k: "weight", label: "体重（g）", type: "number", ph: "記録するときだけ", adv: true },
     { k: "name", label: "呼び名", ph: "任意", adv: true },
@@ -1795,13 +1800,15 @@ function geckoFields(mode, cur = {}) {
 function geckoValuesOut(v) {
   const o = { ...v, ...useFlags(v.use) }; delete o.use;
   if (o.origin === "自家繁殖") { o.purchasePrice = ""; o.breeder = ""; o.locality = ""; }
+  if (o.origin === "購入") { o.sireId = ""; o.damId = ""; } else { o.sireMorph = ""; o.sireHet = ""; o.damMorph = ""; o.damHet = ""; }
   return o;
 }
 /* registering several geckos in a row ("登録して次の個体へ") keeps what they usually share — use, origin, breeder,
    birthday, parents — and opens a fresh form right away; done counts how many were registered in this run */
 function newGeckoForm(pre = {}, done = []) {
   const register = async v => { const o = geckoValuesOut(v); if (o.weight === "") delete o.weight; return createGecko(o); };
-  const keep = v => ({ use: v.use, origin: v.origin, breeder: v.breeder, locality: v.locality, birthDate: v.birthDate, sireId: v.sireId, damId: v.damId, incubTemp: v.incubTemp });
+  /* a bought gecko's parents are not carried to the next one: each starts blank */
+  const keep = v => ({ use: v.use, origin: v.origin, breeder: v.breeder, locality: v.locality, birthDate: v.birthDate, ...(v.origin === "購入" ? {} : { sireId: v.sireId, damId: v.damId }), incubTemp: v.incubTemp });
   openForm({
     title: done.length ? `個体を登録（続けて ${done.length + 1}頭目）` : "個体を登録", fields: geckoFields("new"), values: { use: "breeding", origin: "購入", ...pre }, submit: "登録してIDを発行", moreLabel: "父母・孵化温度・体重など（必要なときだけ）",
     intro: `${done.length ? `<div class="infobox" style="margin:0 0 10px">登録済み: ${done.map(esc).join("・")}</div>` : ""}<p class="note" style="margin:0 0 10px">IDは自動で振られます。自家繁殖の子は、卵のQRから孵化を記録すると親情報つきで登録されます。</p>`,
@@ -2139,7 +2146,9 @@ const cardSpec = g => {
   const names = (en ? [morphEnOf(g) || "—"] : ja ? [g.morph || "—"] : [g.morph || "—", morphEnOf(g)]).filter((x, i, a) => x && a.indexOf(x) === i);
   const morph = !it.morph ? [] : [...names, hetOf(g)].filter(Boolean);
   const par = id => (id && (S.geckos.get(id) || (S.archive || []).find(a => a.id === id))) || null;
-  const sire = par(g.sireId), dam = par(g.damId);
+  /* parents from this ledger, or as written in for a bought gecko */
+  const typed = (m, h) => m || h ? { morph: m || "", het: h || "", morphEn: "" } : null;
+  const sire = par(g.sireId) || typed(g.sireMorph, g.sireHet), dam = par(g.damId) || typed(g.damMorph, g.damHet);
   const pm = p => p ? (en ? morphEnOf(p) : p.morph) || "" : "";
   const sex = g.sex === "♂" || g.sex === "♀" ? g.sex : "";
   const birth = (g.birthDate || "").replace(/-/g, "");
@@ -3995,7 +4004,7 @@ $("#chat-in").addEventListener("keydown", e => { if (e.key === "Enter" && (e.met
 document.addEventListener("keydown", e => { if (e.key === "Escape" && sheets.length) closeSheet(sheets[sheets.length - 1]); });
 
 /* ---------- app: budget / backup strip, settings, automatic backup, updates ---------- */
-const APP_VERSION = "2026-11-09-12";
+const APP_VERSION = "2026-11-09-13";
 const fmtGB = b => (b / 1e9).toFixed(b >= 1e10 ? 0 : 1) + "GB";
 const fmtTime = t => t ? new Date(t).toLocaleString("ja-JP", { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" }) : "まだありません";
 function setPill(el, { val, ratio, state }) {
