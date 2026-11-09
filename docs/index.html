@@ -1474,6 +1474,8 @@ function subscribe(db) {
 /* ---------- print queues: stickers (cage / cup) and business cards are kept apart ---------- */
 const QTYPES = { sticker: "ラベル", cup: "カップ", card: "名刺" };
 const QSIZE = { sticker: "縦2.5cm×横5cm", cup: "縦2.5cm×横5cm", card: "横9.1cm×縦5.5cm" };
+/* the card size follows the price card settings */
+const qsize = type => type === "card" ? (() => { const [w, h] = cardMM(); return "横" + w / 10 + "cm×縦" + h / 10 + "cm"; })() : QSIZE[type];
 const qKey = (id, type) => type === "sticker" ? id : type + ":" + id;
 const qType = q => q.type === "card" || q.type === "cup" ? q.type : "sticker";
 const queued = (id, type) => S.queue.has(qKey(id, type));
@@ -2094,30 +2096,152 @@ function drawCup(ctx, sp, W, H) {
   if (sp.temp) { ctx.font = `700 ${Math.round(H * 0.14)}px ${LMONO}`; ctx.fillText(sp.temp, rx, ty, rw); }
   ctx.restore();
 }
-/* business card 91mm × 55mm for for-sale geckos: ID largest, English morph, price, birthday at the bottom */
-const CARD_MM = [91, 55], CARD_PX = [1075, 650];
-const cardSpec = g => ({ id: g.id, sex: g.sex === "♂" ? "♂ Male" : g.sex === "♀" ? "♀ Female" : "", morph: morphEnOf(g) || "—", price: g.price != null ? yen(g.price) : "", birth: g.birthDate ? "Birth  " + dot(g.birthDate) : "" });
+/* business card / price card for for-sale geckos. Each breeder lays it out in settings (meta/settings.card): size,
+   which items, morph language, QR side, shop name, logo, footer and a note after the price. Everything is sized in
+   fractions of the card, so any size draws the same way; the PDF uses about 300 dpi. */
+const CARD_DEF = { w: 91, h: 55, lang: "en", qr: "right", shop: "", footer: "", priceNote: "", logo: "",
+  items: { id: true, sex: true, morph: true, het: false, price: true, birth: true, temp: false, cb: false } };
+const cardCfg = () => { const c = (S.settings && S.settings.card) || {}; return { ...CARD_DEF, ...c, items: { ...CARD_DEF.items, ...(c.items || {}) } }; };
+const cardMM = () => { const c = cardCfg(); return [Math.min(150, Math.max(30, Number(c.w) || 91)), Math.min(150, Math.max(30, Number(c.h) || 55))]; };
+const cardPX = () => cardMM().map(v => Math.round(v * 11.81));
+/* the logo is kept as a small image in the settings (so it is in backups); drawn once it has loaded */
+let cardLogo = { src: "", img: null };
+function cardLogoImg() {
+  const src = cardCfg().logo; if (!src) return null;
+  if (cardLogo.src !== src) { const img = new Image(); img.src = src; cardLogo = { src, img }; }
+  return cardLogo.img.complete && cardLogo.img.naturalWidth ? cardLogo.img : null;
+}
+async function ensureCardLogo() {
+  if (!cardCfg().logo) return; cardLogoImg();
+  const img = cardLogo.img; if (!img.complete) await new Promise(r => { img.onload = img.onerror = r; setTimeout(r, 3000); });
+}
+const cardSpec = g => {
+  const c = cardCfg(), it = c.items, ja = c.lang === "ja";
+  const morph = !it.morph ? [] : c.lang === "en" ? [morphEnOf(g) || "—"] : ja ? [g.morph || "—"] : [g.morph || "—", morphEnOf(g)].filter((x, i, a) => x && a.indexOf(x) === i);
+  return { id: it.id ? g.id : "", qid: g.id,
+    sex: !it.sex ? "" : g.sex === "♂" ? (ja ? "♂ オス" : "♂ Male") : g.sex === "♀" ? (ja ? "♀ メス" : "♀ Female") : "",
+    morph, het: it.het && g.het ? (ja ? g.het : toEnglish(g.het)) : "",
+    price: it.price && g.price != null ? yen(g.price) : "",
+    birth: it.birth && g.birthDate ? (ja ? "生年月日 " : "Birth ") + dot(g.birthDate) : "",
+    temp: it.temp && g.incubTemp != null && g.incubTemp !== "" ? g.incubTemp + "℃" : "",
+    cb: it.cb && cbText(g) ? cbText(g) : "" };
+};
 function drawCard(ctx, sp, W, H) {
-  ctx.save(); ctx.fillStyle = "#fff"; ctx.fillRect(0, 0, W, H);
-  const pad = 48, qs = 380;
-  drawQR(ctx, qrText(sp.id), W - pad - qs, (H - qs) / 2, qs);
-  const tw = W - pad * 3 - qs; let ty = pad;
-  ctx.fillStyle = "#000"; ctx.textBaseline = "top";
-  ctx.font = `700 150px ${LMONO}`; ctx.fillText(sp.id, pad, ty - 6, tw); ty += 168;
-  if (sp.sex) { ctx.font = `700 46px ${LJP}`; ctx.fillText(sp.sex, pad, ty, tw); ty += 64; }
-  const morphBottom = H - pad - (sp.price ? 150 : 70);
-  /* the morph gets as many of its three lines as fit; a long one is drawn smaller (down to 60%) instead of being cut */
-  let fs = 52, lines;
-  const fits = () => { ctx.font = `700 ${fs}px ${LJP}`; lines = wrapLines(ctx, sp.morph, tw / 0.85, 3); return !(lines[lines.length - 1] || "").endsWith("…") && ty + lines.length * fs * 1.23 <= morphBottom + fs * 0.23; };
-  while (!fits() && fs > 32) fs = Math.max(32, Math.round(fs * 0.92));
-  for (const l of lines) { if (ty + fs > morphBottom) break; ctx.fillText(l, pad, ty, tw); ty += fs * 1.23; }
-  if (sp.price) { ctx.font = `700 64px ${LMONO}`; ctx.fillText(sp.price, pad, H - pad - 130, tw); }
-  if (sp.birth) { ctx.font = `500 42px ${LMONO}`; ctx.fillText(sp.birth, pad, H - pad - 42, tw); }
+  const c = cardCfg(), u = Math.min(W, H), port = H > W, logo = cardLogoImg(), head = !!(logo || c.shop);
+  ctx.save(); ctx.fillStyle = "#fff"; ctx.fillRect(0, 0, W, H); ctx.fillStyle = "#000"; ctx.textBaseline = "top";
+  const pad = Math.round(u * 0.075);
+  /* QR: at the side on a landscape card, at the bottom right on a portrait one */
+  let qs = 0, qx = 0, qy = 0;
+  if (c.qr !== "none") {
+    qs = Math.round(port ? W * 0.42 : Math.min(H - pad * 2, W * 0.36));
+    if (port) { qx = W - pad - qs; qy = H - pad - qs; } else { qy = (H - qs) / 2; qx = c.qr === "left" ? pad : W - pad - qs; }
+    drawQR(ctx, qrText(sp.qid || sp.id), qx, qy, qs);
+  }
+  const tx = !port && qs && c.qr === "left" ? pad * 2 + qs : pad;
+  const tw = port ? W - pad * 2 : W - pad * (qs ? 3 : 2) - qs;
+  const base = port && qs ? qy - pad * 0.5 : H - pad, btw = port && qs ? W - pad * 2 : tw;
+  const meta = [sp.birth, sp.temp].filter(Boolean).join("   ");
+  const mrows = [...sp.morph.map((t, i) => ({ t, b: i === 0, k: i === 0 ? 0.095 : 0.07, n: i === 0 ? 3 : 2 })), ...(sp.het ? [{ t: sp.het, b: false, k: 0.065, n: 2 }] : [])];
+  /* everything is sized by one scale; the largest scale at which the morph fits between the top and bottom blocks is used */
+  const plan = sc => {
+    const f = k => Math.round(u * k * sc);
+    const F = { shop: f(0.13), shopT: f(0.08), id: f(head ? 0.2 : 0.25), sex: f(0.08), price: f(0.13), note: f(0.06), meta: f(0.075), foot: f(0.065) };
+    const top = pad + (head ? F.shop + f(0.04) : 0) + (sp.id ? F.id * 1.08 : 0) + (sp.sex ? F.sex * 1.3 : 0);
+    const bottom = base - (c.footer ? F.foot * 1.35 : 0) - (meta ? F.meta * 1.35 : 0) - (sp.cb ? F.meta * 1.35 : 0) - (sp.price ? F.price * 1.3 : 0);
+    const lay = mrows.map(r => { const fs = f(r.k); ctx.font = `${r.b ? 700 : 500} ${fs}px ${LJP}`; return { r, fs, lines: wrapLines(ctx, r.t, tw / 0.85, r.n) }; });
+    return { F, top, bottom, lay, ok: lay.reduce((a, x) => a + x.lines.length * x.fs * 1.2, 0) <= bottom - top };
+  };
+  let P = plan(1);
+  for (let sc = 0.95; !P.ok && sc >= 0.5; sc -= 0.05) P = plan(sc);
+  const F = P.F;
+  /* top block: logo and shop name, ID, sex */
+  let ty = pad;
+  if (head) {
+    let lx = tx;
+    if (logo) { const lw = Math.min(tw * 0.5, F.shop * logo.naturalWidth / logo.naturalHeight); ctx.drawImage(logo, lx, ty, lw, F.shop); lx += lw + pad * 0.4; }
+    if (c.shop) { ctx.font = `700 ${F.shopT}px ${LJP}`; ctx.fillText(c.shop, lx, ty + (F.shop - F.shopT) / 2, Math.max(0, tw - (lx - tx))); }
+    ty += F.shop + Math.round(u * 0.04);
+  }
+  if (sp.id) { ctx.font = `700 ${F.id}px ${LMONO}`; ctx.fillText(sp.id, tx, ty - F.id * 0.04, tw); ty += F.id * 1.08; }
+  if (sp.sex) { ctx.font = `700 ${F.sex}px ${LJP}`; ctx.fillText(sp.sex, tx, ty, tw); ty += F.sex * 1.3; }
+  /* the morph (and het) in the middle */
+  for (const x of P.lay) { ctx.font = `${x.r.b ? 700 : 500} ${x.fs}px ${LJP}`; for (const l of x.lines) { if (ty + x.fs > P.bottom + 1) break; ctx.fillText(l, tx, ty, tw); ty += x.fs * 1.2; } }
+  /* bottom block, laid out upward from the bottom edge: footer, birthday / temperature, breeder, price */
+  let by = base;
+  const up = (text, size, mono, weight = 500) => { ctx.font = `${weight} ${size}px ${mono ? LMONO : LJP}`; by -= size; ctx.fillText(text, tx, by, btw); by -= size * 0.35; };
+  if (c.footer) up(c.footer, F.foot, false);
+  if (meta) up(meta, F.meta, true);
+  if (sp.cb) up(sp.cb, F.meta, false);
+  if (sp.price) {
+    ctx.font = `700 ${F.price}px ${LMONO}`; by -= F.price; ctx.fillText(sp.price, tx, by, btw);
+    if (c.priceNote) { const pw = Math.min(ctx.measureText(sp.price).width, btw), gap = Math.round(u * 0.03); ctx.font = `500 ${F.note}px ${LJP}`; ctx.fillText(c.priceNote, tx + pw + gap, by + F.price - F.note * 1.1, Math.max(0, btw - pw - gap)); }
+  }
   ctx.restore();
+}
+/* the settings page for the price card, with a live preview on a sample gecko */
+function cardSettingsSheet() {
+  const sample = () => [...S.geckos.values()].find(g => isSale(g) && g.price != null) || { id: "26-0012", sex: "♂", morph: "タンジェリン ラプター", het: "66%het エクリプス", birthDate: "2026-07-20", incubTemp: 31.5, price: 25000, origin: "購入", breeder: "〇〇レプタイルズ" };
+  let save = 0;
+  const put = async patch => { const next = { ...cardCfg(), ...patch }; S.settings.card = next; clearTimeout(save); save = setTimeout(() => saveMeta("settings", { card: next }).catch(e => toast(e.message)), 400); };
+  const preview = s => { const box = $("#card-prev", s.body); if (!box) return; box.innerHTML = ""; const cv = renderCanvas(cardSpec(sample()), "card"); cv.style.cssText = "width:100%;height:auto;display:block;border:1px solid var(--line);border-radius:6px"; box.append(cv); $("#card-size", s.body).textContent = qsize("card"); };
+  const ITEMS = [["id", "ID"], ["sex", "性別"], ["morph", "モルフ"], ["het", "het"], ["price", "価格"], ["birth", "生年月日"], ["temp", "孵化温度"], ["cb", "ブリーダー（CB）"]];
+  const SIZES = [["91x55", "91×55（横）"], ["55x91", "55×91（縦）"], ["custom", "サイズを指定"]];
+  const draw = s => {
+    const c = cardCfg(), sz = c.w + "x" + c.h, preset = SIZES.some(x => x[0] === sz) ? sz : "custom";
+    const seg = (name, opts, val) => `<div class="seg" role="radiogroup">${opts.map(([v, l]) => `<label><input type="radio" name="${name}" value="${v}"${v === val ? " checked" : ""}><span>${l}</span></label>`).join("")}</div>`;
+    s.body.innerHTML = `
+      <div style="max-width:420px;margin:0 auto"><div id="card-prev"></div><p class="note" style="text-align:center;margin:6px 0 0" id="card-size"></p></div>
+      <div class="form" style="margin-top:12px">
+        <div class="field"><label>サイズ</label>${seg("c-size", SIZES, preset)}
+          <div class="idrow" style="margin-top:6px"${preset === "custom" ? "" : " hidden"} id="c-custom"><input id="c-w" inputmode="decimal" value="${esc(c.w)}" aria-label="横（mm）" placeholder="横 mm"><span style="align-self:center">×</span><input id="c-h" inputmode="decimal" value="${esc(c.h)}" aria-label="縦（mm）" placeholder="縦 mm"><span style="align-self:center">mm</span></div></div>
+        <div class="field"><label>載せる項目</label><div class="chips wrap">${ITEMS.map(([k, l]) => `<label class="chip" style="display:flex;gap:6px;align-items:center"><input type="checkbox" data-item="${k}"${c.items[k] ? " checked" : ""}>${l}</label>`).join("")}</div></div>
+        <div class="field"><label>モルフの表記</label>${seg("c-lang", [["en", "英語"], ["ja", "日本語"], ["both", "両方"]], c.lang)}</div>
+        <div class="field"><label>QRコード</label>${seg("c-qr", [["right", "右"], ["left", "左"], ["none", "なし"]], c.qr)}<p class="note" style="margin:0">縦向きのカードでは右下に入ります。</p></div>
+        <div class="field"><label for="c-shop">店名・ブランド名</label><input id="c-shop" value="${esc(c.shop)}" placeholder="任意（例 〇〇レプタイルズ）" autocomplete="off"></div>
+        <div class="field"><label>ロゴ</label><div class="botacts" style="margin:0"><button type="button" class="btn abtn" data-c="logo">${c.logo ? "ロゴを変える" : "ロゴの画像を選ぶ"}</button>${c.logo ? `<button type="button" class="btn abtn" data-c="nologo">ロゴを外す</button>` : ""}</div>
+          <input type="file" id="c-logo-file" accept="image/*" hidden><p class="note" style="margin:0">店名の左に入ります。白い背景のロゴがきれいに出ます。</p></div>
+        <div class="field"><label for="c-note">価格の後ろに付ける文字</label><input id="c-note" value="${esc(c.priceNote)}" placeholder="任意（例 税込）" autocomplete="off"></div>
+        <div class="field"><label for="c-footer">一番下の文字</label><input id="c-footer" value="${esc(c.footer)}" placeholder="任意（例 Instagram @〇〇）" autocomplete="off"></div>
+        <button type="button" class="btn sm" data-c="reset" style="align-self:flex-start">最初の内容に戻す</button>
+      </div>`;
+    preview(s);
+  };
+  openSheet({ title: "名刺（プライスカード）", render: s => {
+    draw(s);
+    s.body.addEventListener("change", async e => {
+      const t = e.target;
+      if (t.name === "c-size") { $("#c-custom", s.body).hidden = t.value !== "custom"; if (t.value !== "custom") { const [w, h] = t.value.split("x").map(Number); await put({ w, h }); } }
+      else if (t.id === "c-w" || t.id === "c-h") { const w = toNum($("#c-w", s.body).value), h = toNum($("#c-h", s.body).value); if (w >= 30 && w <= 150 && h >= 30 && h <= 150) await put({ w, h }); else { toast("サイズは30〜150mmで入れてください"); return; } }
+      else if (t.dataset.item) await put({ items: { ...cardCfg().items, [t.dataset.item]: t.checked } });
+      else if (t.name === "c-lang") await put({ lang: t.value });
+      else if (t.name === "c-qr") await put({ qr: t.value });
+      else if (t.id === "c-shop") await put({ shop: t.value.trim() });
+      else if (t.id === "c-note") await put({ priceNote: t.value.trim() });
+      else if (t.id === "c-footer") await put({ footer: t.value.trim() });
+      else if (t.id === "c-logo-file") {
+        const f = t.files && t.files[0]; t.value = ""; if (!f) return;
+        try {
+          const img = await loadImg(f), iw = img.width || img.naturalWidth, ih = img.height || img.naturalHeight, sc = Math.min(1, 480 / Math.max(iw, ih));
+          const cv = document.createElement("canvas"); cv.width = Math.round(iw * sc); cv.height = Math.round(ih * sc);
+          const x = cv.getContext("2d"); x.fillStyle = "#fff"; x.fillRect(0, 0, cv.width, cv.height); x.drawImage(img, 0, 0, cv.width, cv.height);
+          await put({ logo: cv.toDataURL("image/png") }); await ensureCardLogo(); draw(s); toast("ロゴを入れました"); return;
+        } catch (x) { toast(x.message || "画像を読み込めませんでした"); return; }
+      } else return;
+      preview(s);
+    });
+    s.body.addEventListener("input", e => { if (["c-shop", "c-note", "c-footer"].includes(e.target.id)) { const k = { "c-shop": "shop", "c-note": "priceNote", "c-footer": "footer" }[e.target.id]; S.settings.card = { ...cardCfg(), [k]: e.target.value.trim() }; preview(s); } });
+    s.body.addEventListener("click", async e => {
+      const b = e.target.closest("[data-c]"); if (!b) return;
+      if (b.dataset.c === "logo") $("#c-logo-file", s.body).click();
+      else if (b.dataset.c === "nologo") { await put({ logo: "" }); draw(s); }
+      else if (b.dataset.c === "reset") { if (!confirm("名刺の設定を最初の内容に戻しますか？")) return; S.settings.card = { ...CARD_DEF }; await saveMeta("settings", { card: { ...CARD_DEF } }); draw(s); toast("最初の内容に戻しました"); }
+    });
+  } });
+  ensureCardLogo().then(() => { const s = sheets[sheets.length - 1]; if (s) preview(s); });
 }
 /* out = [w, h] draws the same design at another resolution (the B1 prints at 8 dots per mm) */
 function renderCanvas(sp, type, out) {
-  const [w, h] = type === "card" ? CARD_PX : type === "cup" ? CUP_PX : TAG_PX, c = document.createElement("canvas");
+  const [w, h] = type === "card" ? cardPX() : type === "cup" ? CUP_PX : TAG_PX, c = document.createElement("canvas");
   c.width = out ? out[0] : w; c.height = out ? out[1] : h;
   const ctx = c.getContext("2d");
   /* labels are laid out in fractions of their height, so they draw natively at the B1's size (no stretching);
@@ -2129,7 +2253,7 @@ function renderCanvas(sp, type, out) {
 }
 function toPdf(specs, type) {
   const J = window.jspdf && window.jspdf.jsPDF; if (!J) throw new Error("PDFの部品を読み込めませんでした");
-  const [mw, mh] = type === "card" ? CARD_MM : type === "cup" ? CUP_MM : TAG_MM, orient = mw >= mh ? "landscape" : "portrait";
+  const [mw, mh] = type === "card" ? cardMM() : type === "cup" ? CUP_MM : TAG_MM, orient = mw >= mh ? "landscape" : "portrait";
   const pdf = new J({ unit: "mm", format: [mw, mh], orientation: orient, compress: true });
   specs.forEach((sp, i) => { if (i) pdf.addPage([mw, mh], orient); pdf.addImage(renderCanvas(sp, type).toDataURL("image/jpeg", 0.95), "JPEG", 0, 0, mw, mh); });
   return pdf.output("blob");
@@ -2155,6 +2279,7 @@ async function specFor(id, type, q = {}) {
    system share sheet (iPhone) or the browser download, where Print / the printer app is one tap */
 async function labelSpecs(list, type) {
   try { await document.fonts?.ready; } catch {}
+  if (type === "card") await ensureCardLogo();
   const items = list.map(x => typeof x === "string" ? { refId: x } : x);
   const specs = (await Promise.all(items.map(it => specFor(it.refId, type, it)))).filter(Boolean);
   if (!specs.length) throw new Error("印刷できるものがありません");
@@ -2248,12 +2373,13 @@ async function afterPrinted(ids, type) {
   }
 }
 function previewSheet(id, type) {
-  specFor(id, type).then(sp => {
+  specFor(id, type).then(async sp => {
+    if (type === "card") await ensureCardLogo();
     if (!sp) { toast("表示できません"); return; }
     const url = renderCanvas(sp, type).toDataURL("image/png");
     openSheet({ title: id + (type === "card" ? " の名刺" : " のシール"), render: s => {
       s.body.innerHTML = `<div class="preview" style="max-width:${type === "card" ? 360 : 320}px;margin:0 auto"><img src="${url}" alt="プレビュー" style="display:block;width:100%"></div>
-        <p class="note" style="text-align:center">${QSIZE[type]}</p>
+        <p class="note" style="text-align:center">${qsize(type)}</p>
         <div class="quick"><button class="btn primary big" data-q="now">今すぐ印刷</button>${queued(id, type) ? `<button class="btn big" disabled>印刷待ちに追加済み</button>` : `<button class="btn big" data-q="queue">印刷待ちへ</button>`}</div>`;
       /* B1: the label is prepared now so the tap itself can hand it to Bluefy */
       let j = null; if (useB1(type)) b1Job([id], type).then(x => { j = x; }).catch(() => {});
@@ -2296,7 +2422,7 @@ function queueSheet(startType) {
         : `<div class="empty">${QTYPES[type]}の印刷待ちはありません。</div>`}
       ${type === "sticker" ? `<label class="toggle" style="margin-top:14px;align-items:flex-start"><input type="checkbox" id="q-auto" ${autoQueue() ? "checked" : ""}>ペアリング・産卵・孵化・個体登録のたびに、ラベルを自動で印刷待ちに追加する</label>`
         : `<p class="note" style="margin-top:14px">${type === "cup" ? "カップラベルはパッキングモードから追加します。番号順に印刷します。" : "名刺は、個体の画面の「名刺」かパッキングモードから追加します。"}</p>`}
-      <p class="note">${useB1(type) ? "押すとBluefyで印刷ページが開き、B1から印刷します。" : QSIZE[type] + "の印刷用PDF（1ページ1枚）が開きます。iPhoneでは「プリント」かプリンターのアプリを選んでください。"}</p>`;
+      <p class="note">${useB1(type) ? "押すとBluefyで印刷ページが開き、B1から印刷します。" : qsize(type) + "の印刷用PDF（1ページ1枚）が開きます。iPhoneでは「プリント」かプリンターのアプリを選んでください。"}</p>`;
   };
   openSheet({ title: "印刷待ち", refresh: draw, render: s => {
     draw(s);
@@ -3654,7 +3780,7 @@ $("#chat-in").addEventListener("keydown", e => { if (e.key === "Enter" && (e.met
 document.addEventListener("keydown", e => { if (e.key === "Escape" && sheets.length) closeSheet(sheets[sheets.length - 1]); });
 
 /* ---------- app: budget / backup strip, settings, automatic backup, updates ---------- */
-const APP_VERSION = "2026-11-09-6";
+const APP_VERSION = "2026-11-09-7";
 const fmtGB = b => (b / 1e9).toFixed(b >= 1e10 ? 0 : 1) + "GB";
 const fmtTime = t => t ? new Date(t).toLocaleString("ja-JP", { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" }) : "まだありません";
 function setPill(el, { val, ratio, state }) {
@@ -3870,6 +3996,10 @@ function settingsSheet(focus) {
           <button class="btn" data-sx="padd" style="align-self:flex-start;margin-top:6px">＋ 温度変化を追加</button>
           <p class="note" style="margin:0">温度は3つまで決められます（例: ①31.5℃ → ②25日目から28.5℃ → ③40日目から30℃）。孵化予定日は温度変化も含めて計算します。登録した温度変化は、産卵の記録と卵の「温度・メモ」で選べます。</p></div>
       </section>
+      <section class="setsec" id="sec-card"><h3>名刺（プライスカード）</h3>
+        <p class="note" style="margin:0">サイズ・載せる項目・モルフの表記・QRの位置・店名・ロゴ・一番下の文字を、自分のプライスカードに合わせて変えられます。</p>
+        <button class="btn" data-sx="card" style="align-self:flex-start">プライスカードの設定を開く</button>
+      </section>
       <section class="setsec" id="sec-printer"><h3>ラベルプリンター</h3>
         <label class="toggle"><input type="checkbox" id="st-b1" ${pref("b1", false) ? "checked" : ""}>ラベルとカップラベルをNIIMBOT B1で印刷する（Bluefy経由）</label>
         <p class="note" style="margin:0">「印刷」を押すとBluefyに切り替わり、B1から印刷します。最初の1回はBluefyで印刷ページが開くので「B1とつないで印刷」を押してください。2回目からは開いたままのページが前に出て、つなぎ直さずに印刷します（Bluefyのページは閉じずに置いておいてください）。名刺はこれまでどおりPDFです。</p>
@@ -3920,6 +4050,7 @@ function settingsSheet(focus) {
           return;
         }
         else if (a === "morphs") { morphSheet(); return; }
+        else if (a === "card") { cardSettingsSheet(); return; }
         else if (a === "lang-ja" || a === "lang-en") { const v = a.slice(5); await saveMeta("settings", { morphLang: v }); S.settings.morphLang = v; schedule(); toast(v === "en" ? "モルフ名を英語で表示します" : "モルフ名を日本語で表示します"); }
         else if (a === "trash") { trashSheet(); return; }
         else if (a === "non") { b.disabled = true; await pushEnable(); toast("通知をオンにしました"); }
