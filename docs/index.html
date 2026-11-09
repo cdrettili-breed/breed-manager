@@ -2122,7 +2122,7 @@ function drawCup(ctx, sp, W, H) {
 /* business card / price card for for-sale geckos. Each breeder lays it out in settings (meta/settings.card): size,
    which items, morph language, QR side, shop name, logo, footer and a note after the price. Everything is sized in
    fractions of the card, so any size draws the same way; the PDF uses about 300 dpi. */
-const CARD_DEF = { w: 91, h: 55, lang: "en", qr: "right", shop: "", footer: "", priceNote: "", logo: "",
+const CARD_DEF = { w: 91, h: 55, lang: "en", font: "std", qr: "right", shop: "", footer: "", priceNote: "", logo: "",
   items: { id: true, sex: true, morph: true, sire: true, sireHet: true, dam: true, damHet: true, birth: true, origin: true, price: true },
   print: { portrait: true, dx: 0, dy: 0 }, mode: "design", overlay: { bg: "", boxes: {} } };
 const cardCfg = () => { const c = (S.settings && S.settings.card) || {}; return { ...CARD_DEF, ...c, items: { ...CARD_DEF.items, ...(c.items || {}) }, print: { ...CARD_DEF.print, ...(c.print || {}) } }; };
@@ -2135,7 +2135,21 @@ function cardLogoImg() {
   if (cardLogo.src !== src) { const img = new Image(); img.src = src; cardLogo = { src, img }; }
   return cardLogo.img.complete && cardLogo.img.naturalWidth ? cardLogo.img : null;
 }
+/* the card's typeface: the app's own gothic, or a web font fetched the first time it is chosen (numbers then use it too) */
+const CARD_FONTS = [["std", "標準", ""], ["maru", "丸ゴシック", "Zen Maru Gothic:wght@500;700"], ["mincho", "明朝", "Shippori Mincho:wght@500;700"], ["hand", "手書き風", "Klee One:wght@400;600"]];
+const cardFontFamily = k => { const f = CARD_FONTS.find(x => x[0] === k); return f && f[2] ? f[2].split(":")[0] : ""; };
+const cardFont = () => { const fam = cardFontFamily(cardCfg().font); if (!fam) return { jp: LJP, mono: LMONO }; const s = `"${fam}", ${cardCfg().font === "mincho" ? '"Hiragino Mincho ProN", serif, ' : ""}${LJP}`; return { jp: s, mono: s }; };
+const cardFontLinks = new Set();
+async function ensureCardFont(k = cardCfg().font) {
+  const f = CARD_FONTS.find(x => x[0] === k); if (!f || !f[2]) return;
+  if (!cardFontLinks.has(k)) { const l = document.createElement("link"); l.rel = "stylesheet"; l.href = "https://fonts.googleapis.com/css2?family=" + f[2].replace(/ /g, "+") + "&display=swap"; document.head.append(l); cardFontLinks.add(k); await new Promise(r => { l.onload = l.onerror = r; setTimeout(r, 4000); }); }
+  /* Japanese web fonts come in slices by character, so ask for the characters a card can hold */
+  const text = "0123456789¥,.%/ -ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz〇父母自家繁殖生年月日税込産地het" + [...S.geckos.values()].map(g => (g.morph || "") + (g.het || "") + (g.locality || "") + (g.sireMorph || "") + (g.damMorph || "") + (g.sireHet || "") + (g.damHet || "")).join("") + (cardCfg().priceNote || "") + (cardCfg().shop || "") + (cardCfg().footer || "");
+  const uniq = [...new Set(text)].join(""), fam = f[2].split(":")[0];
+  try { await Promise.race([Promise.all(["500", "700"].map(w => document.fonts.load(`${w} 20px "${fam}"`, uniq))), new Promise(r => setTimeout(r, 5000))]); } catch {}
+}
 async function ensureCardLogo() {
+  await ensureCardFont();
   if (!cardCfg().logo) return; cardLogoImg();
   const img = cardLogo.img; if (!img.complete) await new Promise(r => { img.onload = img.onerror = r; setTimeout(r, 3000); });
 }
@@ -2178,6 +2192,7 @@ let ovlPreview = null; // { bg: Image, sel: key } while the settings preview dra
 let ovlBg = { src: "", img: null };
 function ovlBgImg() { const src = cardCfg().overlay?.bg; if (!src) return null; if (ovlBg.src !== src) { const i = new Image(); i.src = src; ovlBg = { src, img: i }; } return ovlBg.img.complete && ovlBg.img.naturalWidth ? ovlBg.img : null; }
 function drawOverlay(ctx, sp, W, H) {
+  const { jp: LJP, mono: LMONO } = cardFont();
   ctx.save(); ctx.fillStyle = "#fff"; ctx.fillRect(0, 0, W, H);
   if (ovlPreview) { const bg = ovlBgImg(); if (bg) ctx.drawImage(bg, 0, 0, W, H); }
   const boxes = ovlBoxes(), raw = sp.raw || {};
@@ -2224,6 +2239,7 @@ function drawOverlay(ctx, sp, W, H) {
 }
 function drawCard(ctx, sp, W, H) {
   if (cardCfg().mode === "overlay") return drawOverlay(ctx, sp, W, H);
+  const { jp: LJP, mono: LMONO } = cardFont();
   const c = cardCfg(), u = Math.min(W, H), port = H > W, logo = cardLogoImg(), head = !!(logo || c.shop);
   ctx.save(); ctx.fillStyle = "#fff"; ctx.fillRect(0, 0, W, H); ctx.fillStyle = "#000"; ctx.textBaseline = "top";
   const pad = Math.round(u * 0.075);
@@ -2367,11 +2383,13 @@ function cardSettingsSheet() {
           <label class="chip" style="display:inline-flex;gap:6px;align-items:center;align-self:flex-start"><input type="checkbox" id="c-oon"${boxes[sel].on ? " checked" : ""}>この項目を書き込む</label>
           <div class="chips wrap" style="margin-top:6px">${[["l", "← 左"], ["r", "右 →"], ["u", "↑ 上"], ["d", "↓ 下"], ["big", "大きく"], ["small", "小さく"], ["wide", "幅を広く"], ["narrow", "幅を狭く"]].map(([k, l]) => `<button type="button" class="chip" data-onudge="${k}">${l}</button>`).join("")}</div>
           <p class="note" style="margin:0">矢印は0.5mmずつ動きます。文字の大きさは枠の高さに合わせて決まります。</p></div>
+        <div class="field"><label>書体（フォント）</label>${seg("c-font", CARD_FONTS.map(f => [f[0], f[1]]), CARD_FONTS.some(f => f[0] === c.font) ? c.font : "std")}</div>
         <div class="field"><label>モルフの表記</label>${seg("c-lang", [["en", "英語"], ["ja", "日本語"], ["both", "両方"]], c.lang)}</div>
         <div class="field"><label for="c-note">価格の後ろに付ける文字</label><input id="c-note" value="${esc(c.priceNote)}" placeholder="任意（例 税込）" autocomplete="off"></div>` : `
       <div class="infobox" style="margin-top:10px"><b>今使っている名刺に合わせる</b><br><span class="small">名刺の写真を選ぶと、Claudeが読み取ってサイズ・項目・店名・ロゴなどを合わせます（APIキーを使います）。</span><div style="margin-top:8px"><button type="button" class="btn primary" data-c="ai">名刺の写真から合わせる</button></div><input type="file" id="c-photo" accept="image/*" hidden><p class="note" id="c-ai-msg" style="margin:6px 0 0"></p></div>
       <div class="form" style="margin-top:12px">
         <div class="field"><label>載せる項目</label><div class="chips wrap">${ITEMS.map(([k, l]) => `<label class="chip" style="display:flex;gap:6px;align-items:center"><input type="checkbox" data-item="${k}"${c.items[k] ? " checked" : ""}>${l}</label>`).join("")}</div></div>
+        <div class="field"><label>書体（フォント）</label>${seg("c-font", CARD_FONTS.map(f => [f[0], f[1]]), CARD_FONTS.some(f => f[0] === c.font) ? c.font : "std")}</div>
         <div class="field"><label>モルフの表記</label>${seg("c-lang", [["en", "英語"], ["ja", "日本語"], ["both", "両方"]], c.lang)}</div>
         <div class="field"><label>QRコード</label>${seg("c-qr", [["right", "右"], ["left", "左"], ["none", "なし"]], c.qr)}<p class="note" style="margin:0">縦向きのカードでは右下に入ります。</p></div>
         <div class="field"><label for="c-shop">店名・ブランド名</label><input id="c-shop" value="${esc(c.shop)}" placeholder="任意（例 〇〇レプタイルズ）" autocomplete="off"></div>
@@ -2401,6 +2419,7 @@ function cardSettingsSheet() {
       else if (t.id === "c-w" || t.id === "c-h") { const w = toNum($("#c-w", s.body).value), h = toNum($("#c-h", s.body).value); if (w >= 30 && w <= 150 && h >= 30 && h <= 150) await put({ w, h }); else { toast("サイズは30〜150mmで入れてください"); return; } }
       else if (t.dataset.item) await put({ items: { ...cardCfg().items, [t.dataset.item]: t.checked } });
       else if (t.id === "c-oon") { await setBox(sel, { on: t.checked }); draw(s); return; }
+      else if (t.name === "c-font") { await put({ font: t.value }); await ensureCardFont(t.value); }
       else if (t.name === "c-lang") await put({ lang: t.value });
       else if (t.name === "c-qr") await put({ qr: t.value });
       else if (t.name === "c-portrait") await put({ print: { ...cardCfg().print, portrait: t.value === "1" } });
@@ -4022,7 +4041,7 @@ $("#chat-in").addEventListener("keydown", e => { if (e.key === "Enter" && (e.met
 document.addEventListener("keydown", e => { if (e.key === "Escape" && sheets.length) closeSheet(sheets[sheets.length - 1]); });
 
 /* ---------- app: budget / backup strip, settings, automatic backup, updates ---------- */
-const APP_VERSION = "2026-11-09-17";
+const APP_VERSION = "2026-11-09-18";
 const fmtGB = b => (b / 1e9).toFixed(b >= 1e10 ? 0 : 1) + "GB";
 const fmtTime = t => t ? new Date(t).toLocaleString("ja-JP", { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" }) : "まだありません";
 function setPill(el, { val, ratio, state }) {
