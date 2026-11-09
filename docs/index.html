@@ -1502,6 +1502,8 @@ function fieldHTML(f, v) {
   const id = "f-" + f.k; v = v ?? f.def ?? "";
   let c;
   if (f.type === "select") c = `<select id="${id}">${f.options.map(o => { const [val, lab] = optPair(o); return `<option value="${esc(val)}"${String(val) === String(v) ? " selected" : ""}>${esc(lab)}</option>`; }).join("")}</select>`;
+  /* a parent field also reads the parent's QR (f.scan is the sex expected) */
+  if (f.type === "select" && f.scan) c = `<div class="idrow">${c}<button type="button" class="btn" data-scanfor="${id}" data-sex="${esc(f.scan)}" aria-label="${esc(f.label)}をQRで読み取る" style="flex:none">${QR_ICON}QR</button></div>`;
   else if (f.type === "seg") c = `<div class="seg" role="radiogroup" aria-label="${esc(f.label)}">${f.options.map((o, i) => { const [val, lab] = optPair(o); return `<label><input type="radio" name="${id}" id="${id}-${i}" value="${esc(val)}"${String(val) === String(v) ? " checked" : ""}><span>${esc(lab)}</span></label>`; }).join("")}</div>`;
   else if (f.type === "textarea") c = `<textarea id="${id}" rows="2" placeholder="${esc(f.ph || "")}">${esc(v)}</textarea>`;
   else if (f.type === "het") c = `<input id="${id}" type="text" value="${esc(v)}" placeholder="入力すると候補が出ます（例 え → エクリプス）" autocomplete="off" data-ac="gene" data-gkind="het">
@@ -1512,15 +1514,19 @@ function fieldHTML(f, v) {
     <div class="chips wrap acbox" data-acbox="${id}" hidden></div>
     ${geneButtons(f.k, "homo")}`;
   else if (f.type === "birth") {
-    /* one row of four small buttons picks how much is known; only the matching input shows */
+    /* four small buttons pick how much is known; year, month and day are three selects in one row, so after the
+       month the day comes right next (only the ones the precision needs show) */
     /* "-" marks a recorded "unknown" (editing a gecko without a birthday); a new gecko starts on the full date */
     const unknown = v === "-"; if (unknown) v = "";
     const p = unknown ? "n" : !v ? "d" : /^\d{4}$/.test(v) ? "y" : /^\d{4}-\d{2}$/.test(v) ? "m" : "d", yNow = Number(today().slice(0, 4));
-    const yv = v ? String(v).slice(0, 4) : "", mv = /^\d{4}-\d{2}/.test(v) ? String(v).slice(0, 7) : "", dv = p === "d" ? v : "";
+    const [yv, mv, dv] = [String(v).slice(0, 4), String(v).slice(5, 7), String(v).slice(8, 10)];
+    const sel = (k, label, opts, val, show) => `<select id="${id}-${k}" aria-label="${label}"${show ? "" : " hidden"} style="flex:1;min-width:0">${opts.map(([o, l]) => `<option value="${o}"${o === val ? " selected" : ""}>${l}</option>`).join("")}</select>`;
     c = `<div class="seg" role="radiogroup" aria-label="生年月日のわかる範囲" data-birth="${id}">${[["d", "年月日"], ["m", "年月"], ["y", "年"], ["n", "不明"]].map(([k, l]) => `<label><input type="radio" name="${id}-p" value="${k}"${k === p ? " checked" : ""}><span>${l}</span></label>`).join("")}</div>
-      <input id="${id}-d" type="date" value="${esc(dv)}" aria-label="生年月日"${p === "d" ? "" : " hidden"} style="margin-top:6px">
-      <input id="${id}-m" type="month" value="${esc(mv)}" aria-label="生まれた年月"${p === "m" ? "" : " hidden"} style="margin-top:6px">
-      <select id="${id}-y" aria-label="生まれた年"${p === "y" ? "" : " hidden"} style="margin-top:6px">${Array.from({ length: 26 }, (_, i) => yNow - i).map(y => `<option value="${y}"${String(y) === yv ? " selected" : ""}>${y}年</option>`).join("")}</select>`;
+      <div style="display:flex;gap:6px;margin-top:6px" data-birthrow="${id}"${p === "n" ? " hidden" : ""}>
+        ${sel("y", "生まれた年", Array.from({ length: 26 }, (_, i) => String(yNow - i)).map(y => [y, y + "年"]), yv || String(yNow), p !== "n")}
+        ${sel("mo", "生まれた月", [["", "月"], ...Array.from({ length: 12 }, (_, i) => [pad(i + 1, 2), i + 1 + "月"])], mv, p === "d" || p === "m")}
+        ${sel("da", "生まれた日", [["", "日"], ...Array.from({ length: 31 }, (_, i) => [pad(i + 1, 2), i + 1 + "日"])], dv, p === "d")}
+      </div>`;
   }
   else c = `<input id="${id}" type="${f.type === "date" ? "date" : "text"}"${f.type === "number" ? ' inputmode="decimal"' : ""} value="${esc(v)}" placeholder="${esc(f.ph || "")}" autocomplete="off"${f.type === "id" ? ' autocapitalize="characters"' : ""}${f.ac ? ` data-ac="1"${f.geno?.base ? ` data-gbase="f-${esc(f.geno.base)}"` : ""}${f.geno?.homo ? ` data-ghomo="f-${esc(f.geno.homo)}"` : ""}` : ""}>${f.ac ? `<div class="chips wrap acbox" data-acbox="${id}" hidden></div>` : ""}`;
   const chips = f.chips && f.chips.length ? `<div class="chips wrap">${f.chips.map(ch => { const [val, lab] = optPair(ch); return `<button type="button" class="chip" data-fill="${esc(f.k)}" data-val="${esc(val)}"${f.append ? ' data-append="1"' : ""}>${esc(lab)}</button>`; }).join("")}</div>` : "";
@@ -1633,14 +1639,32 @@ document.addEventListener("input", e => {
 });
 document.addEventListener("change", e => { if (e.target.dataset?.gbase || e.target.dataset?.ghomo) autoGeno(e.target); });
 document.addEventListener("pointerdown", e => { if (e.target.closest("[data-acpick]")) e.preventDefault(); });
-/* birthday: show the input for the chosen precision, carrying over what was already picked */
+/* parent by QR: scan the parent's label and it is chosen in the select (added when it is not in the list) */
+document.addEventListener("click", e => {
+  const b = e.target.closest("[data-scanfor]"); if (!b) return;
+  const sel = document.getElementById(b.dataset.scanfor), want = b.dataset.sex; if (!sel) return;
+  startScan(async id => {
+    if (collOf(id) !== "geckos") throw new Error("個体のQRではありません（" + id + "）");
+    const g = await getRec("geckos", id).catch(() => null);
+    if (!g) throw new Error(id + " は見つかりません");
+    if (![...sel.options].some(o => o.value === g.id)) sel.add(new Option(g.id + "  " + (mz(g.morph) || ""), g.id));
+    sel.value = g.id;
+    toast(g.id + " を" + (want === "♂" ? "父" : "母") + "にしました" + (g.sex && g.sex !== want && g.sex !== "不明" ? "（性別が" + g.sex + "になっています）" : ""));
+  });
+});
+/* birthday: show the selects the chosen precision needs; after a month is picked the day select is offered next */
 document.addEventListener("change", e => {
-  const seg = e.target.closest?.("[data-birth]"); if (!seg || e.target.type !== "radio") return;
-  const id = seg.dataset.birth, root = seg.parentElement, p = e.target.value, el = k => root.querySelector("#" + id + "-" + k);
-  const known = el("d").value || (el("m").value ? el("m").value + "-01" : "") || (el("y").value ? el("y").value + "-01-01" : "");
-  if (p === "m" && !el("m").value && known) el("m").value = known.slice(0, 7);
-  if (p === "y" && known) el("y").value = known.slice(0, 4);
-  for (const k of ["d", "m", "y"]) el(k).hidden = k !== p;
+  const seg = e.target.closest?.("[data-birth]");
+  if (seg && e.target.type === "radio") {
+    const id = seg.dataset.birth, root = seg.parentElement, p = e.target.value, el = k => root.querySelector("#" + id + "-" + k);
+    root.querySelector(`[data-birthrow="${id}"]`).hidden = p === "n";
+    el("y").hidden = p === "n"; el("mo").hidden = !(p === "d" || p === "m"); el("da").hidden = p !== "d";
+    return;
+  }
+  if (e.target.id?.endsWith("-mo") && e.target.closest("[data-birthrow]")) {
+    const day = e.target.parentElement.querySelector('[id$="-da"]');
+    if (day && !day.hidden && !day.value) setTimeout(() => day.focus(), 50);
+  }
 });
 document.addEventListener("click", e => {
   const c = e.target.closest("[data-acpick]"); if (!c) return;
@@ -1660,7 +1684,14 @@ document.addEventListener("click", e => {
 function readForm(root, fields) {
   const o = {};
   for (const f of fields) {
-    if (f.type === "birth") { const p = root.querySelector(`input[name="f-${f.k}-p"]:checked`)?.value || "d"; o[f.k] = p === "n" ? "" : (root.querySelector("#f-" + f.k + "-" + p)?.value || ""); continue; }
+    if (f.type === "birth") {
+      const p = root.querySelector(`input[name="f-${f.k}-p"]:checked`)?.value || "d", g = k => root.querySelector("#f-" + f.k + "-" + k)?.value || "";
+      const y = g("y"), mo = g("mo"); let da = g("da");
+      /* a day past the month's end becomes its last day (2月30日 → 2月28/29日) */
+      if (da && y && mo) da = pad(Math.min(Number(da), new Date(Number(y), Number(mo), 0).getDate()), 2);
+      o[f.k] = p === "n" || !y ? "" : p === "y" ? y : p === "m" ? (mo ? y + "-" + mo : y) : (mo && da ? y + "-" + mo + "-" + da : mo ? y + "-" + mo : y);
+      continue;
+    }
     if (f.type === "seg") { const c = root.querySelector(`input[name="f-${f.k}"]:checked`); o[f.k] = c ? c.value : ""; }
     else { const el = root.querySelector("#f-" + f.k); o[f.k] = el ? el.value : ""; }
   }
@@ -1728,12 +1759,12 @@ function geckoFields(mode, cur = {}) {
     { k: "origin", label: "由来", type: "seg", options: ["自家繁殖", "購入", "その他"], def: "購入" },
     { k: "breeder", label: "ブリーダー（誰のCBか・ラベルに印刷）", ph: "例 〇〇レプタイルズ", chips: frequentBreeders(), showIf: v => v.origin !== "自家繁殖" },
     { k: "purchasePrice", label: "購入価格（円）", type: "number", ph: "例 15000", chips: ["5000", "10000", "15000", "20000", "30000", "50000"], showIf: v => v.origin !== "自家繁殖" },
-    { k: "sireId", label: "父", type: "select", options: parentOptions("♂").concat(cur.sireId && !S.geckos.has(cur.sireId) ? [[cur.sireId, cur.sireId]] : []), adv: true },
-    { k: "damId", label: "母", type: "select", options: parentOptions("♀").concat(cur.damId && !S.geckos.has(cur.damId) ? [[cur.damId, cur.damId]] : []), adv: true },
+    { k: "notes", label: "メモ", type: "textarea", ph: "任意" },
+    { k: "sireId", label: "父", type: "select", scan: "♂", options: parentOptions("♂").concat(cur.sireId && !S.geckos.has(cur.sireId) ? [[cur.sireId, cur.sireId]] : []), adv: true },
+    { k: "damId", label: "母", type: "select", scan: "♀", options: parentOptions("♀").concat(cur.damId && !S.geckos.has(cur.damId) ? [[cur.damId, cur.damId]] : []), adv: true },
     tempField(true, cur.incubTemp),
     { k: "weight", label: "体重（g）", type: "number", ph: "記録するときだけ", adv: true },
     { k: "name", label: "呼び名", ph: "任意", adv: true },
-    { k: "notes", label: "メモ", type: "textarea", adv: true },
   ];
   if (mode === "edit") fs.push(
     { k: "price", label: "販売価格（円・名刺に印刷）", type: "number", ph: "パッキングで入ります", adv: true },
@@ -3483,7 +3514,7 @@ $("#chat-in").addEventListener("keydown", e => { if (e.key === "Enter" && (e.met
 document.addEventListener("keydown", e => { if (e.key === "Escape" && sheets.length) closeSheet(sheets[sheets.length - 1]); });
 
 /* ---------- app: budget / backup strip, settings, automatic backup, updates ---------- */
-const APP_VERSION = "2026-11-09-2";
+const APP_VERSION = "2026-11-09-3";
 const fmtGB = b => (b / 1e9).toFixed(b >= 1e10 ? 0 : 1) + "GB";
 const fmtTime = t => t ? new Date(t).toLocaleString("ja-JP", { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" }) : "まだありません";
 function setPill(el, { val, ratio, state }) {
