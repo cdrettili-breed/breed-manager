@@ -3272,6 +3272,7 @@ function openRecord(raw) {
   return openGecko(id);
 }
 const notFound = id => `<div class="empty">${esc(id)} は見つかりません。</div>`;
+const priceInput = (k, v, label) => `<span style="display:inline-flex;align-items:center;gap:4px"><input data-gprice="${k}" inputmode="numeric" enterkeyhint="done" value="${esc(v ?? "")}" placeholder="未設定" aria-label="${esc(label)}" class="mono" style="width:8.5em;min-height:36px;padding:4px 8px;font-size:16px">円</span>`;
 function openGecko(id) {
   id = normId(id);
   const draw = async s => {
@@ -3310,8 +3311,8 @@ function openGecko(id) {
         <dt>由来</dt><dd>${esc(g.origin || "—")}${cbText(g) ? " · " + esc(cbText(g)) : ""}${g.purchasePrice != null ? " · 購入 " + yen(g.purchasePrice) : ""}</dd>
         <dt>父 × 母</dt><dd>${idBtn(g.sireId)} × ${idBtn(g.damId)}</dd>
         ${g.eggId ? `<dt>卵</dt><dd>${idBtn(g.eggId)} ${g.clutchId ? "· " + idBtn(g.clutchId) : ""}</dd>` : ""}
-        ${g.price != null && !done ? `<dt>販売価格</dt><dd class="mono">${yen(g.price)}${g.packNo ? ` <span class="muted small">パッキング No.${esc(g.packNo)}</span>` : ""}${listIds(LISTS.rt).has(g.id) ? ` <span class="pill s-sale">販売 No.${esc(listNo(LISTS.rt, g.id))} 掲載中</span>` : ""}</dd>` : ""}
-        ${g.wholesalePrice != null && !done ? `<dt>卸価格</dt><dd class="mono">${yen(g.wholesalePrice)}${catalogIds().has(g.id) ? ` <span class="pill s-sale">卸 No.${esc(wnoOf(g.id))} 掲載中</span>` : ""}</dd>` : ""}
+        ${done ? "" : `<dt>小売価格</dt><dd>${priceInput("price", g.price, "小売価格（円）")}${g.packNo ? ` <span class="muted small">パッキング No.${esc(g.packNo)}</span>` : ""}${listIds(LISTS.rt).has(g.id) ? ` <span class="pill s-sale">販売 No.${esc(listNo(LISTS.rt, g.id))} 掲載中</span>` : ""}</dd>
+        <dt>卸価格</dt><dd>${priceInput("wholesalePrice", g.wholesalePrice, "卸価格（円）")}${catalogIds().has(g.id) ? ` <span class="pill s-sale">卸 No.${esc(wnoOf(g.id))} 掲載中</span>` : ""}</dd>`}
         <dt>体重</dt><dd class="num">${wh[0] ? esc(wh[0].g) + "g <span class='muted small'>" + esc(md(wh[0].date)) + "</span>" : "—"}</dd>
         ${g.status === "販売済" ? `<dt>販売</dt><dd class="num">${yen(g.soldPrice)} · ${esc(g.soldDate || "")} · ${esc(g.saleChannel || "小売り")}${g.saleNotes ? "<br>" + esc(g.saleNotes) : ""}</dd>` : ""}
         ${g.status === "死亡" ? `<dt>死亡</dt><dd class="num">${esc(g.deathDate || "")}</dd>` : ""}
@@ -3324,6 +3325,14 @@ function openGecko(id) {
       ${logHTML(g)}
       <div class="botacts">${g.status !== "死亡" ? `<button class="btn abtn danger" data-q="dead">死亡</button>` : `<span></span>`}<button class="btn abtn" data-q="edit">編集</button></div>
       <button class="btn block danger" data-q="delete" style="margin-top:8px">この個体を削除（間違えて登録したとき）</button>`;
+    /* the prices are typed right here; each is saved when the field is left */
+    s.body.onchange = async e => {
+      const t = e.target.closest("[data-gprice]"); if (!t) return;
+      const k = t.dataset.gprice, v = toNum(t.value), label = k === "price" ? "小売価格" : "卸価格";
+      if (t.value.trim() && (v == null || v < 0)) { toast("数字で入れてください"); t.value = g[k] ?? ""; return; }
+      if ((v ?? null) === (g[k] ?? null)) return;
+      try { await updateGecko(g.id, { [k]: v ?? "" }); g[k] = v ?? null; toast(v == null ? label + "を消しました" : label + "を " + yen(v) + " にしました"); } catch (x) { toast(x.message); }
+    };
     s.body.onclick = async e => {
       if (e.target.closest("[data-ask]")) return askAbout(g.id);
       const ph = e.target.closest("[data-photo]"); if (ph) return photoSheet(g.id, ph.dataset.photo);
@@ -4050,7 +4059,7 @@ $("#chat-in").addEventListener("keydown", e => { if (e.key === "Enter" && (e.met
 document.addEventListener("keydown", e => { if (e.key === "Escape" && sheets.length) closeSheet(sheets[sheets.length - 1]); });
 
 /* ---------- app: budget / backup strip, settings, automatic backup, updates ---------- */
-const APP_VERSION = "2026-11-09-20";
+const APP_VERSION = "2026-11-09-21";
 const fmtGB = b => (b / 1e9).toFixed(b >= 1e10 ? 0 : 1) + "GB";
 const fmtTime = t => t ? new Date(t).toLocaleString("ja-JP", { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" }) : "まだありません";
 function setPill(el, { val, ratio, state }) {
