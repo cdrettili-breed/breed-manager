@@ -2152,9 +2152,10 @@ const cardSpec = g => {
   const pm = p => p ? (en ? morphEnOf(p) : p.morph) || "" : "";
   const sex = g.sex === "♂" || g.sex === "♀" ? g.sex : "";
   const birth = (g.birthDate || "").replace(/-/g, "");
-  const origin = g.origin === "自家繁殖" ? (en ? "Home bred" : "自家繁殖") : (g.locality || "").trim();
+  /* own-bred is a 〇 (in the card's own 自家繁殖 blank; "自家繁殖 〇" where the card has no labels), otherwise where it came from */
+  const own = g.origin === "自家繁殖", origin = own ? (en ? "Home bred 〇" : "自家繁殖 〇") : (g.locality || "").trim();
   const raw = { id: g.id, sex, morph: [names.join(" / "), hetOf(g)].filter(Boolean).join(" "), sire: pm(sire), sireHet: sire ? hetOf(sire) : "", dam: pm(dam), damHet: dam ? hetOf(dam) : "",
-    birth, origin, price: g.price != null ? yen(g.price) + (c.priceNote ? " " + c.priceNote : "") : "" };
+    birth, origin: own ? "〇" : origin, price: g.price != null ? yen(g.price) + (c.priceNote ? " " + c.priceNote : "") : "" };
   /* a parent line: "♂ Tangerine Raptor  het Eclipse" with whichever parts are switched on */
   const parent = (sym, m, h, onM, onH) => { const t = [onM && m, onH && h].filter(Boolean).join("  "); return t ? sym + " " + t : ""; };
   return { id: it.id ? g.id : "", qid: g.id, sex: it.sex ? sex : "", morph,
@@ -4021,7 +4022,7 @@ $("#chat-in").addEventListener("keydown", e => { if (e.key === "Enter" && (e.met
 document.addEventListener("keydown", e => { if (e.key === "Escape" && sheets.length) closeSheet(sheets[sheets.length - 1]); });
 
 /* ---------- app: budget / backup strip, settings, automatic backup, updates ---------- */
-const APP_VERSION = "2026-11-09-14";
+const APP_VERSION = "2026-11-09-15";
 const fmtGB = b => (b / 1e9).toFixed(b >= 1e10 ? 0 : 1) + "GB";
 const fmtTime = t => t ? new Date(t).toLocaleString("ja-JP", { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" }) : "まだありません";
 function setPill(el, { val, ratio, state }) {
