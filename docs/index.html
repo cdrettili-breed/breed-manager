@@ -1678,7 +1678,7 @@ function openForm({ title, fields, values = {}, submit = "保存", onSubmit, int
       const form = $("form", s.body), err = $(".form-err", s.body), btn = $("button[type=submit]", s.body);
       form.addEventListener("click", async e => {
         const x = e.target.closest("[data-extra]"); if (!x) return;
-        try { const msg = await extra[+x.dataset.extra].onClick(); closeSheet(s); if (msg) toast(msg); } catch (y) { err.textContent = y?.message || String(y); err.hidden = false; }
+        try { const msg = await extra[+x.dataset.extra].onClick(readForm(form, fields)); closeSheet(s); if (msg) toast(msg); } catch (y) { err.textContent = y?.message || String(y); err.hidden = false; }
       });
       const sync = () => { const v = readForm(form, fields); for (const f of fields) if (f.showIf) form.querySelector(`[data-field="${f.k}"]`).hidden = !f.showIf(v); };
       form.addEventListener("change", sync); sync();
@@ -1747,11 +1747,20 @@ function geckoValuesOut(v) {
   if (o.origin === "自家繁殖") { o.purchasePrice = ""; o.breeder = ""; }
   return o;
 }
-function newGeckoForm(pre = {}) {
+/* registering several geckos in a row ("登録して次の個体へ") keeps what they usually share — use, origin, breeder,
+   birthday, parents — and opens a fresh form right away; done counts how many were registered in this run */
+function newGeckoForm(pre = {}, done = []) {
+  const register = async v => { const o = geckoValuesOut(v); if (o.weight === "") delete o.weight; return createGecko(o); };
+  const keep = v => ({ use: v.use, origin: v.origin, breeder: v.breeder, birthDate: v.birthDate, sireId: v.sireId, damId: v.damId, incubTemp: v.incubTemp });
   openForm({
-    title: "個体を登録", fields: geckoFields("new"), values: { use: "breeding", origin: "購入", ...pre }, submit: "登録してIDを発行", moreLabel: "父母・孵化温度・体重など（必要なときだけ）",
-    intro: `<p class="note" style="margin:0 0 10px">IDは自動で振られます。自家繁殖の子は、卵のQRから孵化を記録すると親情報つきで登録されます。</p>`,
-    onSubmit: async v => { const o = geckoValuesOut(v); if (o.weight === "") delete o.weight; const g = await createGecko(o); setTimeout(() => openGecko(g.id), 50); return g.id + " を登録しました" + (g.queued ? "・シール印刷待ちに追加" : ""); }
+    title: done.length ? `個体を登録（続けて ${done.length + 1}頭目）` : "個体を登録", fields: geckoFields("new"), values: { use: "breeding", origin: "購入", ...pre }, submit: "登録してIDを発行", moreLabel: "父母・孵化温度・体重など（必要なときだけ）",
+    intro: `${done.length ? `<div class="infobox" style="margin:0 0 10px">登録済み: ${done.map(esc).join("・")}</div>` : ""}<p class="note" style="margin:0 0 10px">IDは自動で振られます。自家繁殖の子は、卵のQRから孵化を記録すると親情報つきで登録されます。</p>`,
+    onSubmit: async v => { const g = await register(v); setTimeout(() => openGecko(g.id), 50); return g.id + " を登録しました" + (g.queued ? "・シール印刷待ちに追加" : ""); },
+    extra: [{ label: "登録して次の個体へ", onClick: async v => {
+      const g = await register(v);
+      setTimeout(() => newGeckoForm(keep(v), [...done, g.id]), 60);
+      return g.id + " を登録しました。続けて次の個体を入れてください" + (g.queued ? "（シールは印刷待ちに追加）" : "");
+    } }],
   });
 }
 function editGeckoForm(g) {
@@ -1873,7 +1882,8 @@ async function loadParents(list) {
 const TAG_MM = [50, 25], TAG_PX = [590, 295];
 const geckoSpec = g => {
   const par = [g.sireId ? { t: `${g.sireId} ${mz(morphOf(g.sireId))}`, s: true } : null, g.damId ? { t: `${g.damId} ${mz(morphOf(g.damId))}`, s: true } : null].filter(Boolean);
-  const cb = cbText(g), sale = isSale(g) && !isBreeding(g);
+  /* own-bred geckos carry no CB on the label; bought ones show who bred them */
+  const cb = g.origin === "自家繁殖" ? "" : cbText(g), sale = isSale(g) && !isBreeding(g);
   const het = geneLine(g) ? { t: sale ? toEnglish(geneLine(g)) : mz(geneLine(g)), s: true } : null;
   const birth = { t: [dot(g.birthDate), sale && g.incubTemp ? g.incubTemp + "℃" : ""].filter(Boolean).join("  ") };
   return { id: g.id, tag: g.sex === "♂" || g.sex === "♀" ? g.sex : "", rows: [{ t: (sale ? morphEnOf(g) : mz(g.morph)) || "モルフ未入力", b: true, wrap: 2 }, het, birth, cb ? { t: cb } : null, ...(sale ? [] : par)].filter(r => r && r.t) };
@@ -3473,7 +3483,7 @@ $("#chat-in").addEventListener("keydown", e => { if (e.key === "Enter" && (e.met
 document.addEventListener("keydown", e => { if (e.key === "Escape" && sheets.length) closeSheet(sheets[sheets.length - 1]); });
 
 /* ---------- app: budget / backup strip, settings, automatic backup, updates ---------- */
-const APP_VERSION = "2026-11-09-1";
+const APP_VERSION = "2026-11-09-2";
 const fmtGB = b => (b / 1e9).toFixed(b >= 1e10 ? 0 : 1) + "GB";
 const fmtTime = t => t ? new Date(t).toLocaleString("ja-JP", { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" }) : "まだありません";
 function setPill(el, { val, ratio, state }) {
@@ -3670,7 +3680,7 @@ function settingsSheet(focus) {
       </section>
 <section class="setsec" id="sec-lines"><h3>モルフの登録（ベース・コンボ・ライン）</h3>        <p class="note" style="margin:0">遺伝子・コンボモルフ・ラインの追加、変更、削除をまとめて行います。</p>        <button class="btn primary" data-sx="morphs" style="align-self:flex-start">モルフの登録を開く</button>        <div class="field"><label>モルフ名の表記（画面とラベル）</label><div class="qtabs" role="group" aria-label="モルフ名の表記"><button data-sx="lang-ja" aria-pressed="${morphLang() === "ja"}">日本語</button><button data-sx="lang-en" aria-pressed="${morphLang() === "en"}">English</button></div><p class="note" style="margin:0">入力したデータはそのままで、表示だけ切り替えます。名刺は常に英語です。</p></div>      </section>
       <section class="setsec" id="sec-breeder"><h3>自分のブリーダー名</h3>
-        <div class="field"><label for="st-own">自家繁殖の個体のラベルに「〇〇 CB」と印刷します（空欄なら印刷しません）</label>
+        <div class="field"><label for="st-own">自家繁殖の個体の画面に「〇〇 CB」と表示します（ラベルには印刷しません）</label>
           <div class="idrow"><input id="st-own" value="${esc(S.settings.ownBreeder || "")}" placeholder="例 cdrettili" autocomplete="off"><button class="btn" data-sx="own">保存</button></div></div>
       </section>
       <section class="setsec"><h3>写真の読み取り</h3>
@@ -3750,7 +3760,7 @@ function settingsSheet(focus) {
         }
         else if (a === "pdel") { const next = tempPlans().filter(p => p.id !== b.dataset.id); await saveMeta("settings", { tempPlans: next }); S.settings.tempPlans = next; toast("温度変化を削除しました"); }
         else if (a === "padd") { tempPlanForm(); return; }
-        else if (a === "own") { const v = $("#st-own", s.body).value.trim(); await saveMeta("settings", { ownBreeder: v }); S.settings.ownBreeder = v; toast(v ? "「" + v + " CB」と印刷します" : "自家繁殖のCBは印刷しません"); }
+        else if (a === "own") { const v = $("#st-own", s.body).value.trim(); await saveMeta("settings", { ownBreeder: v }); S.settings.ownBreeder = v; toast(v ? "自家繁殖の個体に「" + v + " CB」と表示します" : "自家繁殖のCBは表示しません"); }
         else if (a === "b1url") { await navigator.clipboard.writeText(B1_URL); toast("アドレスをコピーしました。Bluefyに貼り付けて開いてください"); return; }
         else if (a === "unlink") { await BM.backup.unlink(); toast("Dropboxとのつなぎを外しました"); }
         else if (a === "export") { await S.dl.save({ filename: "breed-manager_" + today() + ".json", data: new Blob([await BM.data.exportJSON()], { type: "application/json" }) }); return; }
