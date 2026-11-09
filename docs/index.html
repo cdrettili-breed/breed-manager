@@ -561,8 +561,8 @@ function normSex(s) {
 }
 const GFIELDS = ["name", "sex", "morph", "base", "homo", "het", "morphEn", "birthDate", "incubTemp", "origin", "breeder", "purchasePrice", "price", "wholesalePrice", "sireId", "damId", "clutchId", "eggId", "status", "grade", "breeding", "forSale",
   "soldPrice", "soldDate", "saleChannel", "saleNotes", "deathDate", "weight", "notes", "packNo",
-  "consignee", "consignDate", "consignPrice", "consignFee", "consignNote", "consignFrom", "consignSrcId"];
-const GLABEL = { name: "呼び名", sex: "性別", morph: "モルフ", base: "ベースモルフ", homo: "homo", het: "het", breeder: "ブリーダー", morphEn: "英語モルフ名", birthDate: "生年月日", incubTemp: "孵化温度", origin: "由来", purchasePrice: "購入価格", sireId: "父", damId: "母", clutchId: "産卵", eggId: "卵", notes: "メモ", breeding: "用途", forSale: "用途" };
+  "consignee", "consignDate", "consignPrice", "consignFee", "consignNote", "consignFrom", "consignSrcId", "locality", "sireMorph", "sireHet", "damMorph", "damHet"];
+const GLABEL = { name: "呼び名", sex: "性別", morph: "モルフ", base: "ベースモルフ", homo: "homo", het: "het", breeder: "ブリーダー", morphEn: "英語モルフ名", birthDate: "生年月日", incubTemp: "孵化温度", origin: "由来", purchasePrice: "購入価格", sireId: "父", damId: "母", clutchId: "産卵", eggId: "卵", notes: "メモ", breeding: "用途", forSale: "用途", locality: "産地", sireMorph: "父のモルフ", sireHet: "父のhet", damMorph: "母のモルフ", damHet: "母のhet" };
 function cleanGecko(x) {
   const o = {};
   for (const k of GFIELDS) {
@@ -1827,6 +1827,23 @@ function editGeckoForm(g) {
     values: { ...g, use: useOf(g), birthDate: g.birthDate || "-", grade: g.grade || "", incubTemp: g.incubTemp != null ? String(g.incubTemp) : "", purchasePrice: g.purchasePrice ?? "", price: g.price ?? "", wholesalePrice: g.wholesalePrice ?? "", weight: "", origin: g.origin || "購入" },
     onSubmit: async v => { const o = geckoValuesOut(v); if (o.weight === "") delete o.weight; await updateGecko(g.id, o); return "保存しました"; }
   });
+}
+/* before a gecko goes on a price card (the 名刺 button, packing mode): what the card will say, open to fixing in place —
+   above all the morph and the parents. Nothing is written when nothing was changed. */
+const CHECK_KEYS = ["morph", "homo", "het", "birthDate", "origin", "locality", "sireId", "damId", "sireMorph", "sireHet", "damMorph", "damHet"];
+function checkGeckoForm(g, { title, submit, then }) {
+  const fields = geckoFields("edit", g).filter(f => CHECK_KEYS.includes(f.k)).map(f => ({ ...f, adv: false }));
+  openForm({ title, submit, fields,
+    intro: `<div class="infobox">${sxHTML(g.sex)} <b class="mono">${esc(g.id)}</b> の名刺に印刷される内容です。違っていれば直してから進んでください。</div>`,
+    values: { ...g, birthDate: g.birthDate || "-", origin: g.origin || "購入" },
+    onSubmit: async v => {
+      const o = { ...v };
+      if (o.origin === "自家繁殖") o.locality = "";
+      if (o.origin === "購入") { o.sireId = ""; o.damId = ""; } else { o.sireMorph = ""; o.sireHet = ""; o.damMorph = ""; o.damHet = ""; }
+      const changed = Object.keys(o).some(k => String(o[k] ?? "").trim() !== String(g[k] ?? "").trim());
+      const g2 = changed ? await updateGecko(g.id, o, "名刺の前に確認して修正") : g;
+      return then(g2 || g, changed);
+    } });
 }
 function priceChips(g) {
   const same = (S.sales || []).filter(x => x.morph === g.morph && x.soldPrice != null).sort((a, b) => b.soldDate.localeCompare(a.soldDate)).map(x => String(x.soldPrice));
@@ -3107,9 +3124,14 @@ function packingSheet() {
       if (a === "queue") return queueSheet("cup");
       if (a === "end") { if (!armEnd) { armEnd = true; draw(s); return; } try { await packEnd(); armEnd = false; toast("パッキングを終了しました"); draw(s); } catch (x) { toast(x.message); } return; }
       if (a === "add") {
-        keep(); const err = $(".form-err", s.body); err.hidden = true; b.disabled = true;
-        try { const r = await packAdd({ id: st.id, no: st.no, price: st.price }); toast("No." + r.no + " " + r.id + " を印刷待ちに追加しました"); st.id = ""; st.no = null; st.price = ""; draw(s); }
-        catch (x) { err.textContent = x.message; err.hidden = false; b.disabled = false; }
+        keep(); const err = $(".form-err", s.body); err.hidden = true;
+        if (!Math.round(toNum(st.no)) || toNum(st.price) == null) { err.textContent = !Math.round(toNum(st.no)) ? "番号を決めてください" : "価格を選ぶか入力してください"; err.hidden = false; return; }
+        const g = await getRec("geckos", st.id).catch(() => null); if (!g) { err.textContent = st.id + " が見つかりません"; err.hidden = false; return; }
+        /* check (and fix) what the card will say first; adding happens when that form is sent */
+        checkGeckoForm(g, { title: "No." + st.no + " " + g.id + " の確認", submit: "名刺とカップラベルを印刷待ちへ", then: async () => {
+          const r = await packAdd({ id: st.id, no: st.no, price: st.price }); st.id = ""; st.no = null; st.price = ""; draw(s);
+          return "No." + r.no + " " + r.id + " を印刷待ちに追加しました";
+        } });
       }
     };
   } });
@@ -3353,7 +3375,13 @@ function openGecko(id) {
       if (q === "edit") editGeckoForm(g); else if (q === "sell") sellForm(g); else if (q === "dead") deathForm(g);
       else if (q === "photo") pickPhoto(g.id, "lib");
       else if (q === "photo-cam") pickPhoto(g.id, "cam");
-      else if (q === "card") { if (cardQ) previewSheet(g.id, "card"); else { try { await queueAdd([g.id], "card"); toast("名刺の印刷待ちに追加しました（" + [...S.queue.values()].filter(x => qType(x) === "card").length + "枚）"); draw(s); } catch (x) { toast(x.message); } } }
+      else if (q === "card") {
+        if (cardQ) previewSheet(g.id, "card");
+        else checkGeckoForm(g, { title: g.id + " の名刺", submit: "名刺の印刷待ちに追加", then: async () => {
+          await queueAdd([g.id], "card"); draw(s);
+          return "名刺の印刷待ちに追加しました（" + [...S.queue.values()].filter(x => qType(x) === "card").length + "枚）";
+        } });
+      }
       else if (q === "pair") pairingFlow(g.sex === "♂" ? { sireId: g.id } : { damId: g.id });
       else if (q === "lay") layForm(g.id);
       else if (q === "endlay") { try { await endPairing(lay.pairing.id); toast("産卵終了にしました"); } catch (x) { toast(x.message); } }
@@ -4059,7 +4087,7 @@ $("#chat-in").addEventListener("keydown", e => { if (e.key === "Enter" && (e.met
 document.addEventListener("keydown", e => { if (e.key === "Escape" && sheets.length) closeSheet(sheets[sheets.length - 1]); });
 
 /* ---------- app: budget / backup strip, settings, automatic backup, updates ---------- */
-const APP_VERSION = "2026-11-09-21";
+const APP_VERSION = "2026-11-09-22";
 const fmtGB = b => (b / 1e9).toFixed(b >= 1e10 ? 0 : 1) + "GB";
 const fmtTime = t => t ? new Date(t).toLocaleString("ja-JP", { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" }) : "まだありません";
 function setPill(el, { val, ratio, state }) {
