@@ -2139,7 +2139,7 @@ async function ensureCardLogo() {
   if (!cardCfg().logo) return; cardLogoImg();
   const img = cardLogo.img; if (!img.complete) await new Promise(r => { img.onload = img.onerror = r; setTimeout(r, 3000); });
 }
-/* the card shows: morph with its het, ♂/♀, the parents' morphs and hets, birthday as 20260720, own-bred or where it came from, price, ID */
+/* the card shows: morph with its het, ♂/♀, the parents' morphs and hets, birthday as 2026 07 20, own-bred or where it came from, price, ID */
 const cardSpec = g => {
   const c = cardCfg(), it = c.items, ja = c.lang === "ja", en = c.lang === "en";
   const hetOf = x => x.het ? (en ? toEnglish(x.het) : x.het) : "";
@@ -2151,7 +2151,7 @@ const cardSpec = g => {
   const sire = par(g.sireId) || typed(g.sireMorph, g.sireHet), dam = par(g.damId) || typed(g.damMorph, g.damHet);
   const pm = p => p ? (en ? morphEnOf(p) : p.morph) || "" : "";
   const sex = g.sex === "♂" || g.sex === "♀" ? g.sex : "";
-  const birth = (g.birthDate || "").replace(/-/g, "");
+  const birth = (g.birthDate || "").replace(/-/g, " ");
   /* own-bred is a 〇 (in the card's own 自家繁殖 blank; "自家繁殖 〇" where the card has no labels), otherwise where it came from */
   const own = g.origin === "自家繁殖", origin = own ? (en ? "Home bred 〇" : "自家繁殖 〇") : (g.locality || "").trim();
   const raw = { id: g.id, sex, morph: [names.join(" / "), hetOf(g)].filter(Boolean).join(" "), sire: pm(sire), sireHet: sire ? hetOf(sire) : "", dam: pm(dam), damHet: dam ? hetOf(dam) : "",
@@ -4022,7 +4022,7 @@ $("#chat-in").addEventListener("keydown", e => { if (e.key === "Enter" && (e.met
 document.addEventListener("keydown", e => { if (e.key === "Escape" && sheets.length) closeSheet(sheets[sheets.length - 1]); });
 
 /* ---------- app: budget / backup strip, settings, automatic backup, updates ---------- */
-const APP_VERSION = "2026-11-09-15";
+const APP_VERSION = "2026-11-09-16";
 const fmtGB = b => (b / 1e9).toFixed(b >= 1e10 ? 0 : 1) + "GB";
 const fmtTime = t => t ? new Date(t).toLocaleString("ja-JP", { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" }) : "まだありません";
 function setPill(el, { val, ratio, state }) {
