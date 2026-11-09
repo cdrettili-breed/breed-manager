@@ -2101,7 +2101,7 @@ function drawCup(ctx, sp, W, H) {
    fractions of the card, so any size draws the same way; the PDF uses about 300 dpi. */
 const CARD_DEF = { w: 91, h: 55, lang: "en", qr: "right", shop: "", footer: "", priceNote: "", logo: "",
   items: { id: true, sex: true, morph: true, het: false, price: true, birth: true, temp: false, cb: false },
-  print: { portrait: true, dx: 0, dy: 0 } };
+  print: { portrait: true, dx: 0, dy: 0 }, mode: "design", overlay: { bg: "", boxes: {} } };
 const cardCfg = () => { const c = (S.settings && S.settings.card) || {}; return { ...CARD_DEF, ...c, items: { ...CARD_DEF.items, ...(c.items || {}) }, print: { ...CARD_DEF.print, ...(c.print || {}) } }; };
 const cardMM = () => { const c = cardCfg(); return [Math.min(150, Math.max(30, Number(c.w) || 91)), Math.min(150, Math.max(30, Number(c.h) || 55))]; };
 const cardPX = () => cardMM().map(v => Math.round(v * 11.81));
@@ -2125,9 +2125,50 @@ const cardSpec = g => {
     price: it.price && g.price != null ? yen(g.price) : "",
     birth: it.birth && g.birthDate ? (ja ? "生年月日 " : "Birth ") + dot(g.birthDate) : "",
     temp: it.temp && g.incubTemp != null && g.incubTemp !== "" ? g.incubTemp + "℃" : "",
-    cb: it.cb && cbText(g) ? cbText(g) : "" };
+    cb: it.cb && cbText(g) ? cbText(g) : "",
+    /* bare values for writing into the blanks of a pre-printed card (its own labels say what each is) */
+    raw: { id: g.id, sex: g.sex === "♂" ? (ja ? "♂ オス" : "♂ Male") : g.sex === "♀" ? (ja ? "♀ メス" : "♀ Female") : "", morph: (c.lang === "en" ? [morphEnOf(g)] : ja ? [g.morph] : [g.morph, morphEnOf(g)]).filter((x, i, a) => x && a.indexOf(x) === i).join(" / "), het: g.het ? (ja ? g.het : toEnglish(g.het)) : "",
+      price: g.price != null ? yen(g.price) + (c.priceNote ? " " + c.priceNote : "") : "", birth: g.birthDate ? dot(g.birthDate) : "", temp: g.incubTemp != null && g.incubTemp !== "" ? g.incubTemp + "℃" : "", cb: cbText(g) } };
 };
+/* ---- writing into a pre-printed card: each item has a box (fractions of the card) where its value goes ---- */
+const OVL_FIELDS = [["id", "ID"], ["morph", "モルフ"], ["het", "het"], ["sex", "性別"], ["birth", "生年月日"], ["price", "価格"], ["cb", "ブリーダー"], ["temp", "孵化温度"], ["qr", "QR"]];
+const OVL_DEF = { id: { x: .06, y: .07, w: .5, h: .15, on: true }, morph: { x: .06, y: .26, w: .56, h: .18, on: true }, het: { x: .06, y: .46, w: .56, h: .08, on: false },
+  sex: { x: .06, y: .57, w: .3, h: .08, on: true }, birth: { x: .06, y: .68, w: .4, h: .08, on: true }, price: { x: .06, y: .8, w: .5, h: .13, on: true },
+  cb: { x: .5, y: .68, w: .45, h: .08, on: false }, temp: { x: .5, y: .57, w: .2, h: .08, on: false }, qr: { x: .7, y: .25, w: .25, h: .45, on: true } };
+const ovlBoxes = () => { const b = cardCfg().overlay?.boxes || {}; return Object.fromEntries(OVL_FIELDS.map(([k]) => [k, { ...OVL_DEF[k], ...(b[k] || {}) }])); };
+/* the blank card's photo is only a guide on screen; it is never printed */
+let ovlPreview = null; // { bg: Image, sel: key } while the settings preview draws
+let ovlBg = { src: "", img: null };
+function ovlBgImg() { const src = cardCfg().overlay?.bg; if (!src) return null; if (ovlBg.src !== src) { const i = new Image(); i.src = src; ovlBg = { src, img: i }; } return ovlBg.img.complete && ovlBg.img.naturalWidth ? ovlBg.img : null; }
+function drawOverlay(ctx, sp, W, H) {
+  ctx.save(); ctx.fillStyle = "#fff"; ctx.fillRect(0, 0, W, H);
+  if (ovlPreview) { const bg = ovlBgImg(); if (bg) ctx.drawImage(bg, 0, 0, W, H); }
+  const boxes = ovlBoxes(), raw = sp.raw || {};
+  ctx.fillStyle = "#000"; ctx.textBaseline = "middle";
+  for (const [k] of OVL_FIELDS) {
+    const b = boxes[k]; if (!b.on) continue;
+    const x = b.x * W, y = b.y * H, w = b.w * W, h = b.h * H;
+    if (k === "qr") { const s = Math.min(w, h); drawQR(ctx, qrText(sp.qid || raw.id), x + (w - s) / 2, y + (h - s) / 2, s); }
+    else {
+      const t = raw[k]; if (!t) continue;
+      /* the value fills its box: one line as large as the height allows, two lines when the box is tall and the text long */
+      const mono = ["id", "price", "birth"].includes(k), font = s => `${k === "id" || k === "morph" || k === "price" ? 700 : 500} ${s}px ${mono ? LMONO : LJP}`;
+      const full = Math.round(h * 0.78);
+      ctx.font = font(full);
+      /* one line: as big as the height allows, smaller if it is too wide (lines may still be squeezed to 80%) */
+      let fs = Math.max(8, Math.min(full, Math.floor(full * (w / 0.8) / ctx.measureText(t).width))), lines = [t];
+      /* two lines when that gives bigger text */
+      const two = Math.round(h * 0.42);
+      if (fs < two) { ctx.font = font(two); const l2 = wrapLines(ctx, t, w / 0.8, 2); if (l2.length === 2 && !l2[1].endsWith("…")) { fs = two; lines = l2; } }
+      ctx.font = font(fs);
+      lines.forEach((l, i) => ctx.fillText(l, x, y + h / 2 + (i - (lines.length - 1) / 2) * fs * 1.12, w));
+    }
+    if (ovlPreview) { ctx.save(); ctx.strokeStyle = ovlPreview.sel === k ? "#e5532d" : "rgba(54,169,222,.8)"; ctx.lineWidth = Math.max(2, W / 300) * (ovlPreview.sel === k ? 2 : 1); ctx.setLineDash(ovlPreview.sel === k ? [] : [8, 6]); ctx.strokeRect(x, y, w, h); ctx.restore(); }
+  }
+  ctx.restore();
+}
 function drawCard(ctx, sp, W, H) {
+  if (cardCfg().mode === "overlay") return drawOverlay(ctx, sp, W, H);
   const c = cardCfg(), u = Math.min(W, H), port = H > W, logo = cardLogoImg(), head = !!(logo || c.shop);
   ctx.save(); ctx.fillStyle = "#fff"; ctx.fillRect(0, 0, W, H); ctx.fillStyle = "#000"; ctx.textBaseline = "top";
   const pad = Math.round(u * 0.075);
@@ -2212,23 +2253,67 @@ async function matchCardFromPhoto(file) {
   } else if (b === null) logo = "";
   return { patch, logo };
 }
+/* a blank pre-printed card: Claude finds the card in the photo and the blank space for each item; the card is cut out
+   of the photo as the on-screen guide and the boxes are kept as fractions of the card */
+async function matchBlankCard(file) {
+  if (!sample) throw new Error("Claudeを使えません。アプリを開き直してください");
+  const img = await loadImg(file), iw = img.width || img.naturalWidth, ih = img.height || img.naturalHeight, sc = Math.min(1, 1568 / Math.max(iw, ih));
+  const cv = document.createElement("canvas"); cv.width = Math.round(iw * sc); cv.height = Math.round(ih * sc); cv.getContext("2d").drawImage(img, 0, 0, cv.width, cv.height);
+  const prompt = `これはレオパ（ヒョウモントカゲモドキ）の販売用プライスカードの写真です。店名や「Morph」「Price」などの見出しが印刷済みで、個体ごとの情報を書き込む空欄があります。
+この空欄にプリンターで情報を印刷したいので、次の形のJSONだけで答えてください（説明は不要）。
+{"card":{"x":0〜1,"y":0〜1,"w":0〜1,"h":0〜1},"w_mm":横mm,"h_mm":縦mm,"fields":{"id":箱,"morph":箱,"het":箱,"sex":箱,"birth":箱,"price":箱,"cb":箱,"temp":箱,"qr":箱}}
+- card: 写真全体に対するカードの位置（割合）。
+- w_mm,h_mm: 名刺サイズなら 91×55（縦向きなら 55×91）。比率から判断。
+- 箱: {"x","y","w","h"} を「カードに対する」割合（0〜1）で。その項目の値を書き込む空欄の範囲（見出しの文字は含めない）。空欄が無い項目は null。
+- id=個体番号, morph=モルフ名, het, sex=性別, birth=生年月日, price=価格, cb=ブリーダー, temp=孵化温度, qr=QRコードを入れる場所。`;
+  const r = await sample([{ role: "user", content: [{ type: "image", source: { type: "base64", media_type: "image/jpeg", data: cv.toDataURL("image/jpeg", 0.85).split(",")[1] } }, { type: "text", text: prompt }] }], { modelTier: "default" });
+  const m = String(r?.text || "").match(/\{[\s\S]*\}/); if (!m) throw new Error("答えを読み取れませんでした");
+  const j = JSON.parse(m[0]), frac = v => typeof v === "number" && v >= 0 && v <= 1;
+  const card = j.card && ["x", "y", "w", "h"].every(k => frac(j.card[k])) && j.card.w > 0.2 && j.card.h > 0.2 ? j.card : { x: 0, y: 0, w: 1, h: 1 };
+  /* the guide image: the card cut out of the photo */
+  const cx = card.x * cv.width, cy = card.y * cv.height, cw = card.w * cv.width, ch = card.h * cv.height, k = Math.min(1, 900 / Math.max(cw, ch));
+  const out = document.createElement("canvas"); out.width = Math.round(cw * k); out.height = Math.round(ch * k);
+  out.getContext("2d").drawImage(cv, cx, cy, cw, ch, 0, 0, out.width, out.height);
+  const boxes = {};
+  for (const [f] of OVL_FIELDS) { const b = j.fields?.[f]; boxes[f] = b && ["x", "y", "w", "h"].every(q => frac(b[q])) && b.w > 0.02 && b.h > 0.02 ? { x: b.x, y: b.y, w: b.w, h: b.h, on: true } : { ...OVL_DEF[f], on: false }; }
+  const w = toNum(j.w_mm), h = toNum(j.h_mm), size = w >= 30 && w <= 150 && h >= 30 && h <= 150 ? { w: Math.round(w), h: Math.round(h) } : {};
+  return { ...size, mode: "overlay", overlay: { bg: out.toDataURL("image/jpeg", 0.8), boxes } };
+}
 /* the settings page for the price card, with a live preview on a sample gecko */
 function cardSettingsSheet() {
   const sample = () => [...S.geckos.values()].find(g => isSale(g) && g.price != null) || { id: "26-0012", sex: "♂", morph: "タンジェリン ラプター", het: "66%het エクリプス", birthDate: "2026-07-20", incubTemp: 31.5, price: 25000, origin: "購入", breeder: "〇〇レプタイルズ" };
-  let save = 0;
+  let save = 0, sel = "morph", drag = null;
   const put = async patch => { const next = { ...cardCfg(), ...patch }; S.settings.card = next; clearTimeout(save); save = setTimeout(() => saveMeta("settings", { card: next }).catch(e => toast(e.message)), 400); };
-  const preview = s => { const box = $("#card-prev", s.body); if (!box) return; box.innerHTML = ""; const cv = renderCanvas(cardSpec(sample()), "card"); cv.style.cssText = "width:100%;height:auto;display:block;border:1px solid var(--line);border-radius:6px"; box.append(cv); $("#card-size", s.body).textContent = qsize("card"); };
+  const overlay = () => cardCfg().mode === "overlay";
+  const setBox = (k, patch) => { const boxes = ovlBoxes(), b = { ...boxes[k], ...patch }; b.w = Math.min(1, Math.max(0.03, b.w)); b.h = Math.min(1, Math.max(0.03, b.h)); b.x = Math.min(1 - b.w, Math.max(0, b.x)); b.y = Math.min(1 - b.h, Math.max(0, b.y)); return put({ overlay: { ...cardCfg().overlay, boxes: { ...boxes, [k]: b } } }); };
+  const preview = s => {
+    const box = $("#card-prev", s.body); if (!box) return;
+    ovlPreview = overlay() ? { sel } : null;
+    const cv = renderCanvas(cardSpec(sample()), "card"); ovlPreview = null;
+    cv.style.cssText = "width:100%;height:auto;display:block;border:1px solid var(--line);border-radius:6px;touch-action:none";
+    box.innerHTML = ""; box.append(cv); $("#card-size", s.body).textContent = qsize("card");
+  };
   const ITEMS = [["id", "ID"], ["sex", "性別"], ["morph", "モルフ"], ["het", "het"], ["price", "価格"], ["birth", "生年月日"], ["temp", "孵化温度"], ["cb", "ブリーダー（CB）"]];
   const SIZES = [["91x55", "91×55（横）"], ["55x91", "55×91（縦）"], ["custom", "サイズを指定"]];
   const draw = s => {
-    const c = cardCfg(), sz = c.w + "x" + c.h, preset = SIZES.some(x => x[0] === sz) ? sz : "custom";
+    const c = cardCfg(), sz = c.w + "x" + c.h, preset = SIZES.some(x => x[0] === sz) ? sz : "custom", ov = c.mode === "overlay", boxes = ovlBoxes();
     const seg = (name, opts, val) => `<div class="seg" role="radiogroup">${opts.map(([v, l]) => `<label><input type="radio" name="${name}" value="${v}"${v === val ? " checked" : ""}><span>${l}</span></label>`).join("")}</div>`;
     s.body.innerHTML = `
-      <div style="max-width:420px;margin:0 auto"><div id="card-prev"></div><p class="note" style="text-align:center;margin:6px 0 0" id="card-size"></p></div>
+      ${seg("c-mode", [["design", "自分でデザイン"], ["overlay", "印刷済みのカードに書き込む"]], ov ? "overlay" : "design")}
+      <div style="max-width:420px;margin:10px auto 0"><div id="card-prev"></div><p class="note" style="text-align:center;margin:6px 0 0" id="card-size"></p></div>
+      ${ov ? `
+      <div class="infobox" style="margin-top:10px"><b>空のプライスカードに合わせる</b><br><span class="small">何も書いていないカードを真上から撮って選ぶと、Claudeが空欄の位置を読み取って、各項目をそこに合わせます（APIキーを使います）。</span><div style="margin-top:8px"><button type="button" class="btn primary" data-c="blank">空のカードの写真から合わせる</button></div><input type="file" id="c-blank" accept="image/*" hidden><p class="note" id="c-ai-msg" style="margin:6px 0 0"></p></div>
+      <div class="form" style="margin-top:12px">
+        <div class="field"><label>書き込む項目（選んでから、プレビューの上で指でずらせます）</label>
+          <div class="chips wrap">${OVL_FIELDS.map(([k, l]) => `<button type="button" class="chip" data-osel="${k}" aria-pressed="${sel === k}">${l}${boxes[k].on ? "" : "（オフ）"}</button>`).join("")}</div></div>
+        <div class="field"><label>「${esc(OVL_FIELDS.find(f => f[0] === sel)[1])}」</label>
+          <label class="chip" style="display:inline-flex;gap:6px;align-items:center;align-self:flex-start"><input type="checkbox" id="c-oon"${boxes[sel].on ? " checked" : ""}>この項目を書き込む</label>
+          <div class="chips wrap" style="margin-top:6px">${[["l", "← 左"], ["r", "右 →"], ["u", "↑ 上"], ["d", "↓ 下"], ["big", "大きく"], ["small", "小さく"], ["wide", "幅を広く"], ["narrow", "幅を狭く"]].map(([k, l]) => `<button type="button" class="chip" data-onudge="${k}">${l}</button>`).join("")}</div>
+          <p class="note" style="margin:0">矢印は0.5mmずつ動きます。文字の大きさは枠の高さに合わせて決まります。</p></div>
+        <div class="field"><label>モルフの表記</label>${seg("c-lang", [["en", "英語"], ["ja", "日本語"], ["both", "両方"]], c.lang)}</div>
+        <div class="field"><label for="c-note">価格の後ろに付ける文字</label><input id="c-note" value="${esc(c.priceNote)}" placeholder="任意（例 税込）" autocomplete="off"></div>` : `
       <div class="infobox" style="margin-top:10px"><b>今使っている名刺に合わせる</b><br><span class="small">名刺の写真を選ぶと、Claudeが読み取ってサイズ・項目・店名・ロゴなどを合わせます（APIキーを使います）。</span><div style="margin-top:8px"><button type="button" class="btn primary" data-c="ai">名刺の写真から合わせる</button></div><input type="file" id="c-photo" accept="image/*" hidden><p class="note" id="c-ai-msg" style="margin:6px 0 0"></p></div>
       <div class="form" style="margin-top:12px">
-        <div class="field"><label>サイズ</label>${seg("c-size", SIZES, preset)}
-          <div class="idrow" style="margin-top:6px"${preset === "custom" ? "" : " hidden"} id="c-custom"><input id="c-w" inputmode="decimal" value="${esc(c.w)}" aria-label="横（mm）" placeholder="横 mm"><span style="align-self:center">×</span><input id="c-h" inputmode="decimal" value="${esc(c.h)}" aria-label="縦（mm）" placeholder="縦 mm"><span style="align-self:center">mm</span></div></div>
         <div class="field"><label>載せる項目</label><div class="chips wrap">${ITEMS.map(([k, l]) => `<label class="chip" style="display:flex;gap:6px;align-items:center"><input type="checkbox" data-item="${k}"${c.items[k] ? " checked" : ""}>${l}</label>`).join("")}</div></div>
         <div class="field"><label>モルフの表記</label>${seg("c-lang", [["en", "英語"], ["ja", "日本語"], ["both", "両方"]], c.lang)}</div>
         <div class="field"><label>QRコード</label>${seg("c-qr", [["right", "右"], ["left", "左"], ["none", "なし"]], c.qr)}<p class="note" style="margin:0">縦向きのカードでは右下に入ります。</p></div>
@@ -2236,14 +2321,16 @@ function cardSettingsSheet() {
         <div class="field"><label>ロゴ</label><div class="botacts" style="margin:0"><button type="button" class="btn abtn" data-c="logo">${c.logo ? "ロゴを変える" : "ロゴの画像を選ぶ"}</button>${c.logo ? `<button type="button" class="btn abtn" data-c="nologo">ロゴを外す</button>` : ""}</div>
           <input type="file" id="c-logo-file" accept="image/*" hidden><p class="note" style="margin:0">店名の左に入ります。白い背景のロゴがきれいに出ます。</p></div>
         <div class="field"><label for="c-note">価格の後ろに付ける文字</label><input id="c-note" value="${esc(c.priceNote)}" placeholder="任意（例 税込）" autocomplete="off"></div>
-        <div class="field"><label for="c-footer">一番下の文字</label><input id="c-footer" value="${esc(c.footer)}" placeholder="任意（例 Instagram @〇〇）" autocomplete="off"></div>
+        <div class="field"><label for="c-footer">一番下の文字</label><input id="c-footer" value="${esc(c.footer)}" placeholder="任意（例 Instagram @〇〇）" autocomplete="off"></div>`}
+        <div class="field"><label>サイズ</label>${seg("c-size", SIZES, preset)}
+          <div class="idrow" style="margin-top:6px"${preset === "custom" ? "" : " hidden"} id="c-custom"><input id="c-w" inputmode="decimal" value="${esc(c.w)}" aria-label="横（mm）" placeholder="横 mm"><span style="align-self:center">×</span><input id="c-h" inputmode="decimal" value="${esc(c.h)}" aria-label="縦（mm）" placeholder="縦 mm"><span style="align-self:center">mm</span></div></div>
         <div class="field"><label>印刷（名刺用紙に直接）</label>
           ${seg("c-portrait", [["1", "名刺用紙を縦に差す"], ["0", "横のまま"]], c.print.portrait ? "1" : "0")}
           <p class="note" style="margin:0">多くのプリンター（Canon TR703aなど）は名刺用紙を縦向きで送るので「縦に差す」にします。</p>
           <div class="idrow" style="margin-top:6px"><label for="c-dx" style="align-self:center;white-space:nowrap">左右</label><input id="c-dx" inputmode="decimal" value="${esc(c.print.dx)}" aria-label="左右のずれ（mm）"><label for="c-dy" style="align-self:center;white-space:nowrap">上下</label><input id="c-dy" inputmode="decimal" value="${esc(c.print.dy)}" aria-label="上下のずれ（mm）"><span style="align-self:center">mm</span></div>
           <p class="note" style="margin:0">印刷がずれるときだけ。＋で右・下へ、−で左・上へ動きます（例 1.5）。</p>
           <button type="button" class="btn" data-c="test" style="align-self:flex-start;margin-top:6px">1枚だけテスト印刷</button>
-          <p class="note" style="margin:0">iPhoneの印刷画面でプリンターを選び、用紙サイズを「名刺」にしてください。名刺用紙は後トレイに縦向き・印刷する面を上にして入れます。</p></div>
+          <p class="note" style="margin:0">${ov ? "印刷済みのカードを後トレイに縦向き・書き込む面を上にして入れます。まず普通紙で試して、カードに重ねて位置を確かめるのがおすすめです。" : "iPhoneの印刷画面でプリンターを選び、用紙サイズを「名刺」にしてください。名刺用紙は後トレイに縦向き・印刷する面を上にして入れます。"}</p></div>
         <button type="button" class="btn sm" data-c="reset" style="align-self:flex-start">最初の内容に戻す</button>
       </div>`;
     preview(s);
@@ -2252,9 +2339,11 @@ function cardSettingsSheet() {
     draw(s);
     s.body.addEventListener("change", async e => {
       const t = e.target;
+      if (t.name === "c-mode") { await put({ mode: t.value }); draw(s); return; }
       if (t.name === "c-size") { $("#c-custom", s.body).hidden = t.value !== "custom"; if (t.value !== "custom") { const [w, h] = t.value.split("x").map(Number); await put({ w, h }); } }
       else if (t.id === "c-w" || t.id === "c-h") { const w = toNum($("#c-w", s.body).value), h = toNum($("#c-h", s.body).value); if (w >= 30 && w <= 150 && h >= 30 && h <= 150) await put({ w, h }); else { toast("サイズは30〜150mmで入れてください"); return; } }
       else if (t.dataset.item) await put({ items: { ...cardCfg().items, [t.dataset.item]: t.checked } });
+      else if (t.id === "c-oon") { await setBox(sel, { on: t.checked }); draw(s); return; }
       else if (t.name === "c-lang") await put({ lang: t.value });
       else if (t.name === "c-qr") await put({ qr: t.value });
       else if (t.name === "c-portrait") await put({ print: { ...cardCfg().print, portrait: t.value === "1" } });
@@ -2262,11 +2351,14 @@ function cardSettingsSheet() {
       else if (t.id === "c-shop") await put({ shop: t.value.trim() });
       else if (t.id === "c-note") await put({ priceNote: t.value.trim() });
       else if (t.id === "c-footer") await put({ footer: t.value.trim() });
-      else if (t.id === "c-photo") {
+      else if (t.id === "c-photo" || t.id === "c-blank") {
         const f = t.files && t.files[0]; t.value = ""; if (!f) return;
-        const msg = $("#c-ai-msg", s.body); msg.textContent = "名刺を読み取っています…（10〜20秒）";
-        try { const r = await matchCardFromPhoto(f); await put(r.patch); if (r.logo !== undefined) await put({ logo: r.logo }); await ensureCardLogo(); draw(s); toast("名刺に合わせました。違うところは下で直してください"); }
-        catch (x) { msg.textContent = "読み取れませんでした: " + (x?.message || x); }
+        const msg = $("#c-ai-msg", s.body); msg.textContent = "カードを読み取っています…（10〜20秒）";
+        try {
+          if (t.id === "c-blank") { const r = await matchBlankCard(f); await put(r); }
+          else { const r = await matchCardFromPhoto(f); await put(r.patch); if (r.logo !== undefined) await put({ logo: r.logo }); await ensureCardLogo(); }
+          draw(s); toast("カードに合わせました。違うところは直してください");
+        } catch (x) { msg.textContent = "読み取れませんでした: " + (x?.message || x); }
         return;
       }
       else if (t.id === "c-logo-file") {
@@ -2282,15 +2374,46 @@ function cardSettingsSheet() {
     });
     s.body.addEventListener("input", e => { if (["c-shop", "c-note", "c-footer"].includes(e.target.id)) { const k = { "c-shop": "shop", "c-note": "priceNote", "c-footer": "footer" }[e.target.id]; S.settings.card = { ...cardCfg(), [k]: e.target.value.trim() }; preview(s); } });
     s.body.addEventListener("click", async e => {
+      const os = e.target.closest("[data-osel]"); if (os) { sel = os.dataset.osel; draw(s); return; }
+      const on = e.target.closest("[data-onudge]");
+      if (on) {
+        const [mw, mh] = cardMM(), b = ovlBoxes()[sel], sx = 0.5 / mw, sy = 0.5 / mh, k = on.dataset.onudge;
+        const p = k === "l" ? { x: b.x - sx } : k === "r" ? { x: b.x + sx } : k === "u" ? { y: b.y - sy } : k === "d" ? { y: b.y + sy }
+          : k === "big" ? { h: b.h * 1.1, w: b.w * 1.05 } : k === "small" ? { h: b.h / 1.1, w: b.w / 1.05 } : k === "wide" ? { w: b.w * 1.1 } : { w: b.w / 1.1 };
+        await setBox(sel, p); preview(s); return;
+      }
       const b = e.target.closest("[data-c]"); if (!b) return;
       if (b.dataset.c === "logo") $("#c-logo-file", s.body).click();
       else if (b.dataset.c === "nologo") { await put({ logo: "" }); draw(s); }
       else if (b.dataset.c === "test") { b.disabled = true; try { await ensureCardLogo(); await saveFile("名刺_テスト_" + today() + ".pdf", toPdf([cardSpec(sample())], "card")); } catch (x) { toast(x.message); } finally { b.disabled = false; } }
-      else if (b.dataset.c === "ai") { if (!S.hasKey) { toast("設定でClaudeのAPIキーを入れると使えます"); return; } $("#c-photo", s.body).click(); }
+      else if (b.dataset.c === "ai" || b.dataset.c === "blank") { if (!S.hasKey) { toast("設定でClaudeのAPIキーを入れると使えます"); return; } $(b.dataset.c === "ai" ? "#c-photo" : "#c-blank", s.body).click(); }
       else if (b.dataset.c === "reset") { if (!confirm("名刺の設定を最初の内容に戻しますか？")) return; S.settings.card = { ...CARD_DEF }; await saveMeta("settings", { card: { ...CARD_DEF } }); draw(s); toast("最初の内容に戻しました"); }
     });
+    /* overlay: touch a box on the preview to pick it, drag to move it */
+    const at = (ev, cv) => { const r = cv.getBoundingClientRect(); return { fx: (ev.clientX - r.left) / r.width, fy: (ev.clientY - r.top) / r.height }; };
+    s.body.addEventListener("pointerdown", e => {
+      const cv = e.target.closest("#card-prev canvas"); if (!cv || !overlay()) return;
+      const { fx, fy } = at(e, cv), boxes = ovlBoxes();
+      const hit = [sel, ...OVL_FIELDS.map(f => f[0])].find(k => boxes[k].on && fx >= boxes[k].x && fx <= boxes[k].x + boxes[k].w && fy >= boxes[k].y && fy <= boxes[k].y + boxes[k].h);
+      if (!hit) return;
+      e.preventDefault();
+      const changed = hit !== sel; sel = hit;
+      drag = { k: hit, fx, fy, x: boxes[hit].x, y: boxes[hit].y };
+      if (changed) draw(s); else preview(s);
+    });
+    s.body.addEventListener("pointermove", e => {
+      if (!drag) return; const cv = $("#card-prev canvas", s.body); if (!cv) return;
+      e.preventDefault(); const { fx, fy } = at(e, cv);
+      const boxes = ovlBoxes(), b = boxes[drag.k];
+      S.settings.card = { ...cardCfg(), overlay: { ...cardCfg().overlay, boxes: { ...boxes, [drag.k]: { ...b, x: Math.min(1 - b.w, Math.max(0, drag.x + fx - drag.fx)), y: Math.min(1 - b.h, Math.max(0, drag.y + fy - drag.fy)) } } } };
+      preview(s);
+    });
+    const end = () => { if (!drag) return; drag = null; put({}); };
+    s.body.addEventListener("pointerup", end); s.body.addEventListener("pointercancel", end);
   } });
   ensureCardLogo().then(() => { const s = sheets[sheets.length - 1]; if (s) preview(s); });
+  /* the guide photo loads in the background; draw again once it is there */
+  const bg = cardCfg().overlay?.bg; if (bg) { ovlBgImg(); ovlBg.img.addEventListener("load", () => { const s = sheets[sheets.length - 1]; if (s) preview(s); }, { once: true }); }
 }
 /* out = [w, h] draws the same design at another resolution (the B1 prints at 8 dots per mm) */
 function renderCanvas(sp, type, out) {
@@ -3842,7 +3965,7 @@ $("#chat-in").addEventListener("keydown", e => { if (e.key === "Enter" && (e.met
 document.addEventListener("keydown", e => { if (e.key === "Escape" && sheets.length) closeSheet(sheets[sheets.length - 1]); });
 
 /* ---------- app: budget / backup strip, settings, automatic backup, updates ---------- */
-const APP_VERSION = "2026-11-09-9";
+const APP_VERSION = "2026-11-09-10";
 const fmtGB = b => (b / 1e9).toFixed(b >= 1e10 ? 0 : 1) + "GB";
 const fmtTime = t => t ? new Date(t).toLocaleString("ja-JP", { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" }) : "まだありません";
 function setPill(el, { val, ratio, state }) {
