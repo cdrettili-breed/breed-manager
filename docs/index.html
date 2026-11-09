@@ -2178,6 +2178,39 @@ function drawCard(ctx, sp, W, H) {
   }
   ctx.restore();
 }
+/* matching the price card to a photo of the breeder's own card: Claude reads the photo and answers with the
+   settings (and where the logo is, which is then cut out of the photo) */
+async function matchCardFromPhoto(file) {
+  if (!sample) throw new Error("Claudeを使えません。アプリを開き直してください");
+  const img = await loadImg(file), iw = img.width || img.naturalWidth, ih = img.height || img.naturalHeight, sc = Math.min(1, 1568 / Math.max(iw, ih));
+  const cv = document.createElement("canvas"); cv.width = Math.round(iw * sc); cv.height = Math.round(ih * sc); cv.getContext("2d").drawImage(img, 0, 0, cv.width, cv.height);
+  const data = cv.toDataURL("image/jpeg", 0.85).split(",")[1];
+  const prompt = `これはレオパ（ヒョウモントカゲモドキ）のブリーダーが使っている名刺（プライスカード）の写真です。同じ見た目のカードを作るための設定を、次の形のJSONだけで答えてください（説明は不要）。
+{"w":横mm,"h":縦mm,"lang":"en"|"ja"|"both","qr":"right"|"left"|"none","items":{"id":bool,"sex":bool,"morph":bool,"het":bool,"price":bool,"birth":bool,"temp":bool,"cb":bool},"shop":"店名やブランド名（なければ空）","footer":"一番下の小さい文字（SNSなど。なければ空）","priceNote":"価格の後ろの文字（税込など。なければ空）","logo":null または {"x":左端,"y":上端,"w":幅,"h":高さ}}
+- w,h: 一般的な名刺なら横向き91×55、縦向き55×91。比率から判断。
+- lang: モルフ名が英語なら"en"、日本語なら"ja"、両方あれば"both"。
+- items: カードに載っている項目だけtrue（id=個体番号、sex=性別、morph=モルフ名、het、price=価格、birth=生年月日、temp=孵化温度、cb=ブリーダー名やCB表記）。
+- logo: ロゴ画像があれば、写真全体に対する位置を0〜1の割合で。カード以外の背景も含めた写真全体が基準です。`;
+  const r = await sample([{ role: "user", content: [{ type: "image", source: { type: "base64", media_type: "image/jpeg", data } }, { type: "text", text: prompt }] }], { modelTier: "default" });
+  const m = String(r?.text || "").match(/\{[\s\S]*\}/); if (!m) throw new Error("答えを読み取れませんでした");
+  const j = JSON.parse(m[0]), bool = v => v === true;
+  const patch = {};
+  const w = toNum(j.w), h = toNum(j.h); if (w >= 30 && w <= 150 && h >= 30 && h <= 150) { patch.w = Math.round(w); patch.h = Math.round(h); }
+  if (["en", "ja", "both"].includes(j.lang)) patch.lang = j.lang;
+  if (["right", "left", "none"].includes(j.qr)) patch.qr = j.qr;
+  if (j.items && typeof j.items === "object") patch.items = Object.fromEntries(Object.keys(CARD_DEF.items).map(k => [k, bool(j.items[k])]));
+  for (const k of ["shop", "footer", "priceNote"]) if (typeof j[k] === "string") patch[k] = j[k].trim().slice(0, 60);
+  /* the logo: cut its box out of the photo, with a little margin, onto white */
+  let logo;
+  const b = j.logo;
+  if (b && [b.x, b.y, b.w, b.h].every(v => typeof v === "number" && v >= 0 && v <= 1) && b.w > 0.01 && b.h > 0.01) {
+    const m2 = 0.01, x = Math.max(0, b.x - m2) * cv.width, y = Math.max(0, b.y - m2) * cv.height, lw = Math.min(1, b.w + m2 * 2) * cv.width, lh = Math.min(1, b.h + m2 * 2) * cv.height;
+    const k = Math.min(1, 480 / Math.max(lw, lh)), out = document.createElement("canvas"); out.width = Math.max(1, Math.round(lw * k)); out.height = Math.max(1, Math.round(lh * k));
+    const o = out.getContext("2d"); o.fillStyle = "#fff"; o.fillRect(0, 0, out.width, out.height); o.drawImage(cv, x, y, lw, lh, 0, 0, out.width, out.height);
+    logo = out.toDataURL("image/png");
+  } else if (b === null) logo = "";
+  return { patch, logo };
+}
 /* the settings page for the price card, with a live preview on a sample gecko */
 function cardSettingsSheet() {
   const sample = () => [...S.geckos.values()].find(g => isSale(g) && g.price != null) || { id: "26-0012", sex: "♂", morph: "タンジェリン ラプター", het: "66%het エクリプス", birthDate: "2026-07-20", incubTemp: 31.5, price: 25000, origin: "購入", breeder: "〇〇レプタイルズ" };
@@ -2191,6 +2224,7 @@ function cardSettingsSheet() {
     const seg = (name, opts, val) => `<div class="seg" role="radiogroup">${opts.map(([v, l]) => `<label><input type="radio" name="${name}" value="${v}"${v === val ? " checked" : ""}><span>${l}</span></label>`).join("")}</div>`;
     s.body.innerHTML = `
       <div style="max-width:420px;margin:0 auto"><div id="card-prev"></div><p class="note" style="text-align:center;margin:6px 0 0" id="card-size"></p></div>
+      <div class="infobox" style="margin-top:10px"><b>今使っている名刺に合わせる</b><br><span class="small">名刺の写真を選ぶと、Claudeが読み取ってサイズ・項目・店名・ロゴなどを合わせます（APIキーを使います）。</span><div style="margin-top:8px"><button type="button" class="btn primary" data-c="ai">名刺の写真から合わせる</button></div><input type="file" id="c-photo" accept="image/*" hidden><p class="note" id="c-ai-msg" style="margin:6px 0 0"></p></div>
       <div class="form" style="margin-top:12px">
         <div class="field"><label>サイズ</label>${seg("c-size", SIZES, preset)}
           <div class="idrow" style="margin-top:6px"${preset === "custom" ? "" : " hidden"} id="c-custom"><input id="c-w" inputmode="decimal" value="${esc(c.w)}" aria-label="横（mm）" placeholder="横 mm"><span style="align-self:center">×</span><input id="c-h" inputmode="decimal" value="${esc(c.h)}" aria-label="縦（mm）" placeholder="縦 mm"><span style="align-self:center">mm</span></div></div>
@@ -2218,6 +2252,13 @@ function cardSettingsSheet() {
       else if (t.id === "c-shop") await put({ shop: t.value.trim() });
       else if (t.id === "c-note") await put({ priceNote: t.value.trim() });
       else if (t.id === "c-footer") await put({ footer: t.value.trim() });
+      else if (t.id === "c-photo") {
+        const f = t.files && t.files[0]; t.value = ""; if (!f) return;
+        const msg = $("#c-ai-msg", s.body); msg.textContent = "名刺を読み取っています…（10〜20秒）";
+        try { const r = await matchCardFromPhoto(f); await put(r.patch); if (r.logo !== undefined) await put({ logo: r.logo }); await ensureCardLogo(); draw(s); toast("名刺に合わせました。違うところは下で直してください"); }
+        catch (x) { msg.textContent = "読み取れませんでした: " + (x?.message || x); }
+        return;
+      }
       else if (t.id === "c-logo-file") {
         const f = t.files && t.files[0]; t.value = ""; if (!f) return;
         try {
@@ -2234,6 +2275,7 @@ function cardSettingsSheet() {
       const b = e.target.closest("[data-c]"); if (!b) return;
       if (b.dataset.c === "logo") $("#c-logo-file", s.body).click();
       else if (b.dataset.c === "nologo") { await put({ logo: "" }); draw(s); }
+      else if (b.dataset.c === "ai") { if (!S.hasKey) { toast("設定でClaudeのAPIキーを入れると使えます"); return; } $("#c-photo", s.body).click(); }
       else if (b.dataset.c === "reset") { if (!confirm("名刺の設定を最初の内容に戻しますか？")) return; S.settings.card = { ...CARD_DEF }; await saveMeta("settings", { card: { ...CARD_DEF } }); draw(s); toast("最初の内容に戻しました"); }
     });
   } });
@@ -3780,7 +3822,7 @@ $("#chat-in").addEventListener("keydown", e => { if (e.key === "Enter" && (e.met
 document.addEventListener("keydown", e => { if (e.key === "Escape" && sheets.length) closeSheet(sheets[sheets.length - 1]); });
 
 /* ---------- app: budget / backup strip, settings, automatic backup, updates ---------- */
-const APP_VERSION = "2026-11-09-7";
+const APP_VERSION = "2026-11-09-8";
 const fmtGB = b => (b / 1e9).toFixed(b >= 1e10 ? 0 : 1) + "GB";
 const fmtTime = t => t ? new Date(t).toLocaleString("ja-JP", { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" }) : "まだありません";
 function setPill(el, { val, ratio, state }) {
