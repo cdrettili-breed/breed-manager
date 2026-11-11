@@ -1084,8 +1084,83 @@ async function delClick(e, s, draw, fn) {
 function activePairingFor(damId) {
   return [...S.pairings.values()].filter(p => p.damId === damId && isActivePair(p)).sort((a, b) => b.date.localeCompare(a.date))[0] || null;
 }
+/* ---------- pairing codes: a letter for the line the pair belongs to + a running number per letter (A1, A2, C1…) ----------
+   The letter comes from the first rule whose name appears in either parent's morph / homo / het (or their genes);
+   the rules are edited in settings. Numbers are counted in meta/settings.pairSeq so they never repeat. */
+const PAIR_LINES_DEF = [{ name: "トレンパー", letter: "A" }, { name: "ベル", letter: "B" }, { name: "マックスノー", letter: "C" }, { name: "メラニスティック", letter: "E" }, { name: "サテン", letter: "S" }, { name: "ラヴァ", letter: "L" }];
+const pairLines = () => Array.isArray(S.settings.pairLines) ? S.settings.pairLines : PAIR_LINES_DEF;
+const pairLetters = () => [...new Set(pairLines().map(l => l.letter).filter(Boolean))];
+function pairLetter(dam, sire) {
+  const text = g => { if (!g) return ""; let gn = []; try { gn = Object.keys(parseMorph(g.morph || "").genes).map(k => geneOf(k)?.name || k); } catch {} return [g.morph, g.homo, g.het, g.base, ...gn].join(" "); };
+  const hay = kanaFold(text(dam) + " " + text(sire));
+  return pairLines().find(l => l.name && l.letter && hay.includes(kanaFold(l.name)))?.letter || "";
+}
+const peekPairCode = L => L ? L + (((S.settings.pairSeq || {})[L] || 0) + 1) : "";
+async function nextPairCode(L) {
+  const seq = { ...(S.settings.pairSeq || {}) }; seq[L] = (seq[L] || 0) + 1; S.settings.pairSeq = seq;
+  await saveMeta("settings", { pairSeq: seq }); return L + seq[L];
+}
+/* pairings made before codes existed get theirs once, oldest first */
+let pairCodesBusy = false;
+async function ensurePairCodes() {
+  if (pairCodesBusy || !S.db || !S.settingsLoaded || !S.pairings || !S.ready || S.settings.pairCodesInit) return;
+  pairCodesBusy = true;
+  try {
+    const seq = { ...(S.settings.pairSeq || {}) };
+    for (const p of [...S.pairings.values()].filter(p => !p.code).sort((a, b) => (a.date + a.id).localeCompare(b.date + b.id))) {
+      const L = pairLetter(await getRec("geckos", p.damId).catch(() => null), await getRec("geckos", p.sireId).catch(() => null)); if (!L) continue;
+      seq[L] = (seq[L] || 0) + 1; await putRec("pairings", p.id, { code: L + seq[L] }, "ペア記号 " + L + seq[L]);
+    }
+    S.settings.pairSeq = seq; S.settings.pairCodesInit = true; await saveMeta("settings", { pairSeq: seq, pairCodesInit: true });
+  } catch (e) { console.warn("pair codes", e); } finally { pairCodesBusy = false; }
+}
+/* settings: the line → letter rules, checked from the top */
+function pairLinesSheet() {
+  let rows = pairLines().map(l => ({ ...l }));
+  const save = async () => {
+    const clean = rows.map(r => ({ name: String(r.name || "").trim(), letter: String(r.letter || "").trim().toUpperCase().replace(/[^A-Z]/g, "").slice(0, 2) })).filter(r => r.name && r.letter);
+    S.settings.pairLines = clean; await saveMeta("settings", { pairLines: clean });
+  };
+  openSheet({ title: "ペアリングの記号", render: s => {
+    const draw = () => {
+      s.body.innerHTML = `<p class="note" style="margin:0 0 10px">ペアリングには「記号＋番号」（A1, A2…）が付きます。親のモルフ・homo・hetに入っている系統を上から順に探して記号を決めます（例 トレンパーが入っていれば A）。</p>
+        <div style="display:flex;flex-direction:column;gap:8px">${rows.map((r, i) => `<div style="display:flex;align-items:center;gap:6px">
+          <input data-pl="${i}" data-f="name" value="${esc(r.name)}" placeholder="系統（例 トレンパー）" aria-label="系統の名前" style="flex:1;min-width:0;padding:4px 6px;font-size:16px">
+          <span style="flex:none">系</span><input data-pl="${i}" data-f="letter" value="${esc(r.letter)}" maxlength="2" autocapitalize="characters" aria-label="記号" class="mono" style="width:2.6em;flex:none;padding:4px;text-align:center;font-size:16px">
+          <button class="btn sm" data-pu="${i}" aria-label="上へ" style="flex:none;padding:0 8px"${i ? "" : " disabled"}>↑</button><button class="btn sm danger" data-pd="${i}" aria-label="削除" style="flex:none;padding:0 8px">✕</button></div>`).join("")}</div>
+        <div class="botacts"><button class="btn abtn" data-padd>系統を追加</button><button class="btn abtn" data-preset>最初の内容に戻す</button></div>
+        <p class="note">次の番号：${pairLetters().map(L => `<span class="mono">${esc(peekPairCode(L))}</span>`).join("・") || "—"}</p>`;
+    };
+    draw();
+    s.body.onchange = async e => { const t = e.target.closest("[data-pl]"); if (!t) return; rows[+t.dataset.pl][t.dataset.f] = t.value; try { await save(); toast("保存しました"); } catch (x) { toast(x.message); } };
+    s.body.onclick = async e => {
+      const up = e.target.closest("[data-pu]"), del = e.target.closest("[data-pd]");
+      if (up) { const i = +up.dataset.pu; [rows[i - 1], rows[i]] = [rows[i], rows[i - 1]]; }
+      else if (del) { const r = rows[+del.dataset.pd]; if (r.name && !confirm("「" + r.name + "系＝" + r.letter + "」を削除しますか？")) return; rows.splice(+del.dataset.pd, 1); }
+      else if (e.target.closest("[data-padd]")) { rows.push({ name: "", letter: "" }); draw(); s.body.querySelector(`[data-pl="${rows.length - 1}"]`)?.focus(); return; }
+      else if (e.target.closest("[data-preset]")) { if (!confirm("記号の決まりを最初の内容に戻しますか？（付いている番号はそのままです）")) return; rows = PAIR_LINES_DEF.map(l => ({ ...l })); }
+      else return;
+      try { await save(); } catch (x) { toast(x.message); } draw();
+    };
+  } });
+}
+/* giving a pairing a code later, or a different letter (it takes that letter's next number) */
+async function pairCodeForm(p) {
+  const auto = pairLetter(await getRec("geckos", p.damId).catch(() => null), await getRec("geckos", p.sireId).catch(() => null));
+  const cur = (p.code || "").replace(/\d+$/, "");
+  openForm({ title: (p.code || p.id) + " の記号", submit: "記号を付ける",
+    intro: `<p class="note" style="margin:0">選んだ記号の次の番号が付きます（例 ${esc(peekPairCode(auto || pairLetters()[0] || "A"))}）。${p.code ? "今の記号 " + esc(p.code) + " の番号は空きになります。" : ""}</p>`,
+    fields: [{ k: "letter", label: "記号", type: "seg", options: [...new Set([...pairLetters(), ...(auto ? [auto] : [])])].map(x => [x, x + "（" + (pairLines().find(l => l.letter === x)?.name || "") + "系）"]), def: cur || auto || pairLetters()[0] }],
+    onSubmit: async v => {
+      const L = String(v.letter || "").toUpperCase(); if (!L) throw new Error("記号を選んでください");
+      if (cur === L) return "記号は " + p.code + " のままです";
+      const code = await nextPairCode(L); await putRec("pairings", p.id, { code }, "ペア記号 " + (p.code ? p.code + " → " : "") + code);
+      return "記号を " + code + " にしました";
+    } });
+}
+const pairCodeHTML = p => p?.code ? `<span class="pill s-sale mono" style="font-weight:700">${esc(p.code)}</span>` : "";
 async function createPairing(input) { const p = await _createPairing(input); p.queued = await maybeQueue([p.id]); return p; }
-async function _createPairing({ damId, sireId, date, notes }) {
+async function _createPairing({ damId, sireId, date, notes, letter }) {
   needDb();
   return serial(async () => {
     const dam = await getRec("geckos", damId), sire = await getRec("geckos", sireId);
@@ -1098,9 +1173,11 @@ async function _createPairing({ damId, sireId, date, notes }) {
     const id = await allocId("PR" + yy(d), n => "PR" + yy(d) + "-" + pad(n, 3), "pairings");
     for (const old of [...S.pairings.values()].filter(p => p.damId === dam.id && isActivePair(p)))
       await putRec("pairings", old.id, { status: "終了", endDate: d }, "終了（新しいペアリング " + id + "）");
-    const doc = await newRec("pairings", { id, damId: dam.id, sireId: sire.id, date: d, endDate: "", notes: String(notes || ""), status: "産卵中", createdAt: nowTs(), updatedAt: nowTs(), log: [L(`登録 ♀${dam.id} × ♂${sire.id}`)] });
-    await logTo("geckos", dam.id, `ペアリング ${id}（♂${sire.id}）`);
-    await logTo("geckos", sire.id, `ペアリング ${id}（♀${dam.id}）`);
+    /* letter undefined: from the rules; "" : no code */
+    const Lt = letter === undefined ? pairLetter(dam, sire) : String(letter || "").trim().toUpperCase(), code = Lt ? await nextPairCode(Lt) : "";
+    const doc = await newRec("pairings", { id, code, damId: dam.id, sireId: sire.id, date: d, endDate: "", notes: String(notes || ""), status: "産卵中", createdAt: nowTs(), updatedAt: nowTs(), log: [L(`登録${code ? " " + code : ""} ♀${dam.id} × ♂${sire.id}`)] });
+    await logTo("geckos", dam.id, `ペアリング ${code ? code + " " : ""}${id}（♂${sire.id}）`);
+    await logTo("geckos", sire.id, `ペアリング ${code ? code + " " : ""}${id}（♀${dam.id}）`);
     return doc;
   });
 }
@@ -1459,15 +1536,15 @@ function subscribe(db) {
   const cutoff = addDays(today(), -450);
   const onErr = e => { setConn("bad", "同期エラー"); console.warn(e); };
   const into = (key, after) => snap => { S[key] = new Map(snap.docs.map(d => [d.id, d.data()])); after?.(); schedule(); };
-  db.collection("geckos").where("active", "==", true).limit(1000).onSnapshot(into("geckos", () => { S.ready = true; setConn("on", S.geckos.size + "頭"); }), onErr);
-  db.collection("pairings").where("date", ">=", cutoff).limit(1000).onSnapshot(into("pairings"), onErr);
+  db.collection("geckos").where("active", "==", true).limit(1000).onSnapshot(into("geckos", () => { if (!S.ready) setTimeout(ensurePairCodes, 1000); S.ready = true; setConn("on", S.geckos.size + "頭"); }), onErr);
+  db.collection("pairings").where("date", ">=", cutoff).limit(1000).onSnapshot(into("pairings", () => setTimeout(ensurePairCodes, 500)), onErr);
   db.collection("clutches").where("layDate", ">=", cutoff).limit(1000).onSnapshot(into("clutches"), onErr);
   db.collection("eggs").where("status", "==", "孵卵中").limit(1000).onSnapshot(into("eggs"), onErr);
   db.collection("printQueue").limit(1000).onSnapshot(into("queue", renderBadge), onErr);
   db.doc("meta/lines").onSnapshot(snap => { S.lines = snap.exists ? (snap.data().items || []) : []; schedule(); }, onErr);
   db.doc("meta/morphs").onSnapshot(snap => { applyMorphs(snap.exists ? snap.data() : null); schedule(); }, onErr);
   let prefsChecked = false;
-  db.doc("meta/settings").onSnapshot(snap => { S.settings = snap.exists ? snap.data() : {}; if (!prefsChecked) { prefsChecked = true; migratePrefs(); ensureQrKey(); } schedule(); }, onErr);
+  db.doc("meta/settings").onSnapshot(snap => { S.settings = snap.exists ? snap.data() : {}; S.settingsLoaded = true; if (!prefsChecked) { prefsChecked = true; migratePrefs(); ensureQrKey(); setTimeout(ensurePairCodes, 800); } schedule(); }, onErr);
   db.doc("public/catalog").onSnapshot(snap => { S.catalog = snap.exists ? { items: [], ...snap.data() } : { items: [] }; schedule(); if (catalogMode) renderCatalogPage(); }, onErr);
   db.doc("public/shop").onSnapshot(snap => { S.shop = snap.exists ? { items: [], ...snap.data() } : { items: [] }; schedule(); }, onErr);
   db.doc("meta/packing").onSnapshot(snap => { S.packing = snap.exists ? { items: [], ...snap.data() } : { items: [] }; schedule(); }, onErr);
@@ -2091,7 +2168,7 @@ const geckoSpecs = async list => { await loadParents(list); return list.map(geck
 const eggSpec = e => ({ id: e.id, tag: "卵", rows: [{ t: `♀${e.damId} × ♂${e.sireId || "?"}`, wrap: 2 }, { t: `産卵 ${sdot(e.layDate)}${e.temp ? "  " + shortPlan(e.temp, e.plan) : ""}` }, { t: `予定 ${sdot(e.expectedHatch)}` }] });
 /* one label per clutch: its QR opens the hatch screen with a card for every egg in it */
 const clutchSpec = c => ({ id: c.id, tag: "卵" + (c.eggs || (c.eggIds || []).length) + "個", rows: [{ t: `♀${c.damId} × ♂${c.sireId || "?"}`, wrap: 2 }, { t: `産卵 ${sdot(c.layDate)}${c.temp ? "  " + shortPlan(c.temp, c.plan) : ""}` }, { t: `予定 ${sdot(c.expectedHatch)}` }] });
-const pairSpec = p => ({ id: p.id, head: "♂" + p.sireId, tag: "", rows: [{ t: mz(morphOf(p.sireId)) || "", b: true, wrap: 2 }, { t: "交配 " + dot(p.date) }] });
+const pairSpec = p => ({ id: p.id, head: "♂" + p.sireId, tag: p.code || "", rows: [{ t: mz(morphOf(p.sireId)) || "", b: true, wrap: 2 }, { t: "交配 " + dot(p.date) }] });
 /* sizes are fractions of the label height, so the same design draws at any resolution (PDF or the B1's 8 dots/mm) */
 function drawTag(ctx, sp, x, y, w, h) {
   ctx.save();
@@ -2237,7 +2314,9 @@ const cardSpec = g => {
   const sire = par(g.sireId) || typed(g.sireMorph, g.sireHet), dam = par(g.damId) || typed(g.damMorph, g.damHet);
   const pm = p => p ? (en ? morphEnOf(p) : p.morph) || "" : "";
   const own = g.origin === "自家繁殖";
-  const raw = { id: g.id, sex: g.sex === "♂" || g.sex === "♀" ? g.sex : "", morph: [names.join(" / "), hetOf(g)].filter(Boolean).join(" "),
+  /* in packing, the ID carries the packing number: P98-0001.78 */
+  const cid = g.packNo ? g.id + "." + g.packNo : g.id;
+  const raw = { id: cid, sex: g.sex === "♂" || g.sex === "♀" ? g.sex : "", morph: [names.join(" / "), hetOf(g)].filter(Boolean).join(" "),
     sire: pm(sire), sireHet: sire ? hetOf(sire) : "", dam: pm(dam), damHet: dam ? hetOf(dam) : "",
     birth: (g.birthDate || "").replace(/^\d\d(\d\d)/, "$1").replace(/-/g, "   "),
     /* own-bred is a 〇 (in the card's own 自家繁殖 blank), otherwise the country */
@@ -2246,7 +2325,7 @@ const cardSpec = g => {
   for (const k of CARD_TEXT_KEYS) if (has(k)) raw[k] = ov[k];
   /* a parent line: "♂ Tangerine Raptor  het Eclipse" with whichever parts are switched on */
   const parent = (sym, m, h, onM, onH) => { const t = [onM && m, onH && h].filter(Boolean).join("  "); return t ? sym + " " + t : ""; };
-  return { id: it.id ? g.id : "", qid: g.id, sex: it.sex ? raw.sex : "",
+  return { id: it.id ? cid : "", qid: g.id, sex: it.sex ? raw.sex : "",
     morph: !it.morph ? [] : has("morph") ? [raw.morph].filter(Boolean) : [...names, hetOf(g)].filter(Boolean),
     sire: parent(en ? "Sire" : "父", raw.sire, raw.sireHet, it.sire, it.sireHet), dam: parent(en ? "Dam" : "母", raw.dam, raw.damHet, it.dam, it.damHet),
     price: it.price && g.price != null ? num(g.price) : "",
@@ -3077,18 +3156,25 @@ function pairingFlow(pre = {}) {
       s.body.innerHTML = slot("dam", 1, "メス", dam, dam ? "" : st.dam, true) + slot("sire", 2, "オス", sire, sire ? "" : st.sire, !!dam)
         + (dam && sire ? `<h3 class="sec-h">生まれる子の予想 <span class="count">親のモルフとhetから計算</span></h3>${oddsHTML(predictFor(dam, sire))}` : "")
         + (cur ? `<div class="infobox">${esc(dam.id)} は現在 ${idBtn(cur.id)}（♂${esc(cur.sireId)}）で産卵中です。登録するとそちらは終了になります。</div>` : "")
-        + `<div class="form">${fieldHTML({ k: "pf-date", label: "ペアリング日", type: "date" }, st.date)}
+        + `<div class="form">${dam && sire ? (() => {
+            const auto = pairLetter(dam, sire), L = st.letter ?? auto, opts = [...new Set([...pairLetters(), ...(L ? [L] : [])])];
+            return `<div class="field"><label>ペア記号（${L ? `<b class="mono">${esc(peekPairCode(L))}</b> になります` : "なし"}）</label>
+              <div class="seg" role="radiogroup">${[...opts.map(x => [x, x]), ["", "なし"]].map(([v, l]) => `<label><input type="radio" name="pf-letter" value="${esc(v)}"${v === L ? " checked" : ""}><span>${esc(l)}</span></label>`).join("")}</div>
+              <p class="note" style="margin:0">${auto ? "親のモルフから「" + esc(pairLines().find(l => l.letter === auto)?.name || "") + "系」で " + esc(auto) + " にしています。" : "親のモルフに当てはまる系統がありません。"}記号は設定から追加・変更できます。</p></div>`;
+          })() : ""}
+           ${fieldHTML({ k: "pf-date", label: "ペアリング日", type: "date" }, st.date)}
            <p class="form-err" role="alert" hidden></p><button class="btn primary block big" data-go ${ready ? "" : "disabled"}>ペアリングを登録</button></div>`;
     };
     const keep = () => { const d = $("#f-pf-date", s.body); if (d) st.date = d.value; };
+    s.body.onchange = e => { if (e.target.name === "pf-letter") { keep(); st.letter = e.target.value; draw(); } };
     s.body.onclick = async e => {
       const t = e.target;
-      const sc = t.closest("[data-scan]"); if (sc) { keep(); const key = sc.dataset.scan; startScan(id => { if (collOf(id) !== "geckos") throw new Error("個体のQRではありません（" + id + "）"); st[key] = id; draw(); }); return; }
-      const en = t.closest("[data-enter]"); if (en) { keep(); const v = $("#ide-" + en.dataset.enter, s.body).value; if (v.trim()) { st[en.dataset.enter] = normId(v); draw(); } return; }
-      const x = t.closest("[data-x]"); if (x) { keep(); st[x.dataset.x] = ""; draw(); return; }
+      const sc = t.closest("[data-scan]"); if (sc) { keep(); const key = sc.dataset.scan; startScan(id => { if (collOf(id) !== "geckos") throw new Error("個体のQRではありません（" + id + "）"); st[key] = id; st.letter = undefined; draw(); }); return; }
+      const en = t.closest("[data-enter]"); if (en) { keep(); const v = $("#ide-" + en.dataset.enter, s.body).value; if (v.trim()) { st[en.dataset.enter] = normId(v); st.letter = undefined; draw(); } return; }
+      const x = t.closest("[data-x]"); if (x) { keep(); st[x.dataset.x] = ""; st.letter = undefined; draw(); return; }
       if (t.closest("[data-go]")) {
         keep(); const b = t.closest("[data-go]"), err = $(".form-err", s.body); b.disabled = true; err.hidden = true;
-        try { const p = await createPairing({ damId: st.dam, sireId: st.sire, date: st.date }); closeSheet(s); toast(p.id + " を登録しました" + (p.queued ? "・シール印刷待ちに追加" : "")); }
+        try { const p = await createPairing({ damId: st.dam, sireId: st.sire, date: st.date, letter: st.letter }); closeSheet(s); toast((p.code ? p.code + "（" + p.id + "）" : p.id) + " を登録しました" + (p.queued ? "・シール印刷待ちに追加" : "")); }
         catch (x2) { err.textContent = x2.message; err.hidden = false; b.disabled = false; }
       }
     };
@@ -3505,7 +3591,7 @@ function openGecko(id) {
         <button class="btn abtn${br ? "" : " primary"}" data-q="card">${cardQ ? "名刺 待ち" : "名刺"}</button>
         <button class="btn abtn dark" data-q="sell">販売</button></div>`;
     s.body.innerHTML = `
-      ${lay ? `<div class="laybox"><div class="laytxt"><b>産卵中</b> ♂${idBtn(lay.sireId)} · 次 ${esc(md(lay.next))} <span class="days ${dueCls(lay.daysLeft)}">${dueText(lay.daysLeft)}</span><br><span class="muted small">${idBtn(lay.pairing.id)}${lay.last ? " · 前回 " + esc(md(lay.last)) + " · " + lay.count + "回" : " · 初回待ち"}</span></div>
+      ${lay ? `<div class="laybox"><div class="laytxt"><b>産卵中</b> ♂${idBtn(lay.sireId)} · 次 ${esc(md(lay.next))} <span class="days ${dueCls(lay.daysLeft)}">${dueText(lay.daysLeft)}</span><br><span class="muted small">${pairCodeHTML(lay.pairing)} ${idBtn(lay.pairing.id)}${lay.last ? " · 前回 " + esc(md(lay.last)) + " · " + lay.count + "回" : " · 初回待ち"}</span></div>
         <div class="laybtns"><button class="btn abtn primary" data-q="lay">産卵を記録</button><button class="btn abtn" data-q="endlay">産卵終了</button></div></div>` : ""}
       <div class="hero">${sxHTML(g.sex)}<span class="midid">${esc(g.id)}</span>${pill(g.status)}${gradeHTML(g.grade)}<span class="muted small" style="margin-left:auto">${esc(useLabel(g))}</span></div>
       ${top}
@@ -3534,7 +3620,7 @@ function openGecko(id) {
         ${g.notes ? `<dt>メモ</dt><dd style="white-space:pre-wrap">${esc(g.notes)}</dd>` : ""}
       </dl>
       ${qrRow(g.id, "ケージに貼っておけば、アプリ右上のQRボタンで読み取るとこの画面が開きます。")}
-      ${pairs.length ? `<h3 class="sec-h">ペアリング <span class="count">${pairs.length}</span></h3><div class="hist">${pairs.map(p => `<div><span>${esc(md(p.date))}</span><span>${idBtn(p.id)} ${p.damId === g.id ? "♂" + idBtn(p.sireId) : "♀" + idBtn(p.damId)} ${pill(pairStatus(p))}</span></div>`).join("")}</div>` : ""}
+      ${pairs.length ? `<h3 class="sec-h">ペアリング <span class="count">${pairs.length}</span></h3><div class="hist">${pairs.map(p => `<div><span>${esc(md(p.date))}</span><span>${pairCodeHTML(p)} ${idBtn(p.id)} ${p.damId === g.id ? "♂" + idBtn(p.sireId) : "♀" + idBtn(p.damId)} ${pill(pairStatus(p))}</span></div>`).join("")}</div>` : ""}
       ${kids.length ? `<h3 class="sec-h">子 <span class="count">${kids.length}頭（飼育中）</span></h3><div class="idgrid">${kids.map(k => idBtn(k.id)).join("")}</div>` : ""}
       ${wh.length > 1 ? `<h3 class="sec-h">体重の記録</h3><div class="hist">${wh.map(w => `<div><span>${esc(w.date)}</span><span class="mono">${esc(w.g)}g</span></div>`).join("")}</div>` : ""}
       ${logHTML(g)}
@@ -3600,7 +3686,7 @@ function openPairing(id) {
     const cl = [...S.clutches.values()].filter(c => c.pairingId === p.id).sort((a, b) => a.layDate.localeCompare(b.layDate));
     const lay = isActivePair(p) ? layingFemales().find(x => x.pairing.id === p.id) : null;
     s.body.innerHTML = `
-      <div class="hero"><span class="bigid">${esc(p.id)}</span>${pill(pairStatus(p))}</div>
+      <div class="hero">${p.code ? `<span class="bigid">${esc(p.code)}</span><span class="muted small mono">${esc(p.id)}</span>` : `<span class="bigid">${esc(p.id)}</span>`}${pill(pairStatus(p))}<button class="btn sm" data-q="code" style="margin-left:auto">${p.code ? "記号を変える" : "記号を付ける"}</button></div>
       ${lay ? `<div class="topacts"><button class="btn abtn primary" data-q="lay">産卵を記録</button><button class="btn abtn" data-q="end">産卵終了</button></div>` : ""}
       <dl class="kv"><dt>メス</dt><dd>${idBtn(p.damId)} <span class="muted small">${esc(mz(S.geckos.get(p.damId)?.morph) || "")}</span></dd>
       <dt>オス</dt><dd>${idBtn(p.sireId)} <span class="muted small">${esc(mz(S.geckos.get(p.sireId)?.morph) || "")}</span></dd>
@@ -3617,6 +3703,7 @@ function openPairing(id) {
       ${delBtn(p.id, "ペアリング")}`;
     s.body.onclick = async e => { if (e.target.closest("[data-ask]")) return askAbout(p.id); if (await delClick(e, s, draw, deletePairing)) return; const b = e.target.closest("[data-q]"); if (!b) return;
       if (b.dataset.q === "lay") return layForm(p.damId);
+      if (b.dataset.q === "code") return pairCodeForm(p);
       try { await endPairing(p.id); toast("産卵終了にしました"); } catch (x) { toast(x.message); } };
   };
   openSheet({ title: "ペアリング " + id, render: draw, refresh: draw });
@@ -4280,7 +4367,7 @@ $("#chat-in").addEventListener("keydown", e => { if (e.key === "Enter" && (e.met
 document.addEventListener("keydown", e => { if (e.key === "Escape" && sheets.length) closeSheet(sheets[sheets.length - 1]); });
 
 /* ---------- app: budget / backup strip, settings, automatic backup, updates ---------- */
-const APP_VERSION = "2026-11-11-3";
+const APP_VERSION = "2026-11-11-4";
 const fmtGB = b => (b / 1e9).toFixed(b >= 1e10 ? 0 : 1) + "GB";
 const fmtTime = t => t ? new Date(t).toLocaleString("ja-JP", { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" }) : "まだありません";
 function setPill(el, { val, ratio, state }) {
@@ -4496,6 +4583,10 @@ function settingsSheet(focus) {
           <button class="btn" data-sx="padd" style="align-self:flex-start;margin-top:6px">＋ 温度変化を追加</button>
           <p class="note" style="margin:0">温度は3つまで決められます（例: ①31.5℃ → ②25日目から28.5℃ → ③40日目から30℃）。孵化予定日は温度変化も含めて計算します。登録した温度変化は、産卵の記録と卵の「温度・メモ」で選べます。</p></div>
       </section>
+      <section class="setsec" id="sec-pairlines"><h3>ペアリングの記号</h3>
+        <p class="note" style="margin:0">ペアリングに付く「記号＋番号」（トレンパー系＝A1, A2…）の決まりを追加・変更できます。</p>
+        <button class="btn" data-sx="pairlines" style="align-self:flex-start">記号の決まりを開く</button>
+      </section>
       <section class="setsec" id="sec-import"><h3>個体をまとめて取り込む</h3>
         <p class="note" style="margin:0">今いる個体をExcelでまとめて登録できます。取り込み用のExcelを出力して、1行1頭で入れてから取り込みます。</p>
         <button class="btn" data-sx="import" style="align-self:flex-start">Excelで取り込む</button>
@@ -4558,6 +4649,7 @@ function settingsSheet(focus) {
         else if (a === "card") { cardSettingsSheet(); return; }
         else if (a === "bcountry") { breederCountrySheet(); return; }
         else if (a === "import") { importSheet(); return; }
+        else if (a === "pairlines") { pairLinesSheet(); return; }
         else if (a === "lang-ja" || a === "lang-en") { const v = a.slice(5); await saveMeta("settings", { morphLang: v }); S.settings.morphLang = v; schedule(); toast(v === "en" ? "モルフ名を英語で表示します" : "モルフ名を日本語で表示します"); }
         else if (a === "trash") { trashSheet(); return; }
         else if (a === "non") { b.disabled = true; await pushEnable(); toast("通知をオンにしました"); }
