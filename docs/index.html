@@ -2167,17 +2167,24 @@ function cardLogoImg() {
   return cardLogo.img.complete && cardLogo.img.naturalWidth ? cardLogo.img : null;
 }
 /* the card's typeface: the app's own gothic, or a web font fetched the first time it is chosen (numbers then use it too) */
-const CARD_FONTS = [["std", "標準", ""], ["maru", "丸ゴシック", "Zen Maru Gothic:wght@500;700"], ["mincho", "明朝", "Shippori Mincho:wght@500;700"], ["hand", "手書き風", "Klee One:wght@400;600"]];
+/* [key, name, Google Fonts family spec, true for Mincho-like faces (they fall back to the system Mincho)] */
+const CARD_FONTS = [["std", "標準", ""],
+  ["gothic", "ゴシック", "Noto Sans JP:wght@500;700"], ["ud", "UDゴシック", "BIZ UDPGothic:wght@400;700"], ["heavy", "極太ゴシック", "Dela Gothic One"],
+  ["maru", "丸ゴシック", "Zen Maru Gothic:wght@500;700"], ["maru2", "丸ゴシック太め", "M PLUS Rounded 1c:wght@500;800"], ["kosugi", "小杉丸", "Kosugi Maru"], ["kiwi", "キウイ丸", "Kiwi Maru:wght@500"],
+  ["mincho", "明朝", "Shippori Mincho:wght@500;700", true], ["mincho2", "明朝（太め）", "Zen Old Mincho:wght@500;700", true], ["mincho3", "さわらび明朝", "Sawarabi Mincho", true], ["decol", "デコ明朝", "Kaisei Decol:wght@500;700", true],
+  ["hand", "手書き風", "Klee One:wght@400;600"], ["kurenaido", "ペン字", "Zen Kurenaido"], ["magic", "マジック", "Yusei Magic"], ["fude", "筆文字", "Yuji Syuku", true],
+  ["pop", "ポップ", "Hachi Maru Pop"], ["mochiy", "ポップ太め", "Mochiy Pop One"], ["rock", "ロック", "RocknRoll One"], ["dot", "ドット", "DotGothic16"]];
 const cardFontFamily = k => { const f = CARD_FONTS.find(x => x[0] === k); return f && f[2] ? f[2].split(":")[0] : ""; };
-const cardFont = () => { const fam = cardFontFamily(cardCfg().font); if (!fam) return { jp: LJP, mono: LMONO }; const s = `"${fam}", ${cardCfg().font === "mincho" ? '"Hiragino Mincho ProN", serif, ' : ""}${LJP}`; return { jp: s, mono: s }; };
+const cardFont = () => { const fam = cardFontFamily(cardCfg().font); if (!fam) return { jp: LJP, mono: LMONO }; const s = `"${fam}", ${CARD_FONTS.find(f => f[0] === cardCfg().font)?.[3] ? '"Hiragino Mincho ProN", serif, ' : ""}${LJP}`; return { jp: s, mono: s }; };
 const cardFontLinks = new Set();
+const fontChips = cur => { const k = CARD_FONTS.some(f => f[0] === cur) ? cur : "std"; return `<div class="chips wrap">${CARD_FONTS.map(([v, l]) => `<button type="button" class="chip" data-cfont="${v}" aria-pressed="${v === k}">${l}</button>`).join("")}</div><p class="note" style="margin:0">標準以外は初めて選んだときに読み込みます（数秒）。</p>`; };
 async function ensureCardFont(k = cardCfg().font) {
   const f = CARD_FONTS.find(x => x[0] === k); if (!f || !f[2]) return;
   if (!cardFontLinks.has(k)) { const l = document.createElement("link"); l.rel = "stylesheet"; l.href = "https://fonts.googleapis.com/css2?family=" + f[2].replace(/ /g, "+") + "&display=swap"; document.head.append(l); cardFontLinks.add(k); await new Promise(r => { l.onload = l.onerror = r; setTimeout(r, 4000); }); }
   /* Japanese web fonts come in slices by character, so ask for the characters a card can hold */
   const text = "0123456789¥,.%/ -ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz〇父母自家繁殖生年月日税込産地het" + [...S.geckos.values()].map(g => (g.morph || "") + (g.het || "") + (g.locality || "") + (g.sireMorph || "") + (g.damMorph || "") + (g.sireHet || "") + (g.damHet || "")).join("") + (cardCfg().priceNote || "") + (cardCfg().shop || "") + (cardCfg().footer || "");
   const uniq = [...new Set(text)].join(""), fam = f[2].split(":")[0];
-  try { await Promise.race([Promise.all(["500", "700"].map(w => document.fonts.load(`${w} 20px "${fam}"`, uniq))), new Promise(r => setTimeout(r, 5000))]); } catch {}
+  try { await Promise.race([Promise.all(["500", "700"].map(w => document.fonts.load(`${w} 20px "${fam}"`, uniq))), new Promise(r => setTimeout(r, 9000))]); } catch {}
 }
 async function ensureCardLogo() {
   await ensureCardFont();
@@ -2460,13 +2467,13 @@ function cardSettingsSheet() {
           <label class="chip" style="display:inline-flex;gap:6px;align-items:center;align-self:flex-start"><input type="checkbox" id="c-oon"${boxes[sel].on ? " checked" : ""}>この項目を書き込む</label>
           <div class="chips wrap" style="margin-top:6px">${[["l", "← 左"], ["r", "右 →"], ["u", "↑ 上"], ["d", "↓ 下"], ["big", "大きく"], ["small", "小さく"], ["wide", "幅を広く"], ["narrow", "幅を狭く"]].map(([k, l]) => `<button type="button" class="chip" data-onudge="${k}">${l}</button>`).join("")}</div>
           <p class="note" style="margin:0">矢印は0.5mmずつ動きます。文字の大きさは枠の高さに合わせて決まります。</p></div>
-        <div class="field"><label>書体（フォント）</label>${seg("c-font", CARD_FONTS.map(f => [f[0], f[1]]), CARD_FONTS.some(f => f[0] === c.font) ? c.font : "std")}</div>
+        <div class="field"><label>書体（フォント）</label>${fontChips(c.font)}</div>
         <div class="field"><label>モルフの表記</label>${seg("c-lang", [["en", "英語"], ["ja", "日本語"], ["both", "両方"]], c.lang)}</div>
         <div class="field"><label for="c-note">価格の後ろに付ける文字</label><input id="c-note" value="${esc(c.priceNote)}" placeholder="任意（例 税込）" autocomplete="off"></div>` : `
       <div class="infobox" style="margin-top:10px"><b>今使っている名刺に合わせる</b><br><span class="small">名刺の写真を選ぶと、Claudeが読み取ってサイズ・項目・店名・ロゴなどを合わせます（APIキーを使います）。</span><div style="margin-top:8px"><button type="button" class="btn primary" data-c="ai">名刺の写真から合わせる</button></div><input type="file" id="c-photo" accept="image/*" hidden><p class="note" id="c-ai-msg" style="margin:6px 0 0"></p></div>
       <div class="form" style="margin-top:12px">
         <div class="field"><label>載せる項目</label><div class="chips wrap">${ITEMS.map(([k, l]) => `<label class="chip" style="display:flex;gap:6px;align-items:center"><input type="checkbox" data-item="${k}"${c.items[k] ? " checked" : ""}>${l}</label>`).join("")}</div></div>
-        <div class="field"><label>書体（フォント）</label>${seg("c-font", CARD_FONTS.map(f => [f[0], f[1]]), CARD_FONTS.some(f => f[0] === c.font) ? c.font : "std")}</div>
+        <div class="field"><label>書体（フォント）</label>${fontChips(c.font)}</div>
         <div class="field"><label>モルフの表記</label>${seg("c-lang", [["en", "英語"], ["ja", "日本語"], ["both", "両方"]], c.lang)}</div>
         <div class="field"><label>QRコード</label>${seg("c-qr", [["right", "右"], ["left", "左"], ["none", "なし"]], c.qr)}<p class="note" style="margin:0">縦向きのカードでは右下に入ります。</p></div>
         <div class="field"><label for="c-shop">店名・ブランド名</label><input id="c-shop" value="${esc(c.shop)}" placeholder="任意（例 〇〇レプタイルズ）" autocomplete="off"></div>
@@ -2496,7 +2503,6 @@ function cardSettingsSheet() {
       else if (t.id === "c-w" || t.id === "c-h") { const w = toNum($("#c-w", s.body).value), h = toNum($("#c-h", s.body).value); if (w >= 30 && w <= 150 && h >= 30 && h <= 150) await put({ w, h }); else { toast("サイズは30〜150mmで入れてください"); return; } }
       else if (t.dataset.item) await put({ items: { ...cardCfg().items, [t.dataset.item]: t.checked } });
       else if (t.id === "c-oon") { await setBox(sel, { on: t.checked }); draw(s); return; }
-      else if (t.name === "c-font") { await put({ font: t.value }); await ensureCardFont(t.value); }
       else if (t.name === "c-lang") await put({ lang: t.value });
       else if (t.name === "c-qr") await put({ qr: t.value });
       else if (t.name === "c-portrait") await put({ print: { ...cardCfg().print, portrait: t.value === "1" } });
@@ -2528,6 +2534,12 @@ function cardSettingsSheet() {
     s.body.addEventListener("input", e => { if (["c-shop", "c-note", "c-footer"].includes(e.target.id)) { const k = { "c-shop": "shop", "c-note": "priceNote", "c-footer": "footer" }[e.target.id]; S.settings.card = { ...cardCfg(), [k]: e.target.value.trim() }; preview(s); } });
     s.body.addEventListener("click", async e => {
       const os = e.target.closest("[data-osel]"); if (os) { sel = os.dataset.osel; draw(s); return; }
+      const cf = e.target.closest("[data-cfont]");
+      if (cf) {
+        const k = cf.dataset.cfont; await put({ font: k });
+        s.body.querySelectorAll("[data-cfont]").forEach(b => b.setAttribute("aria-pressed", String(b.dataset.cfont === k)));
+        preview(s); await ensureCardFont(k); preview(s); return;
+      }
       const on = e.target.closest("[data-onudge]");
       if (on) {
         const [mw, mh] = cardMM(), b = ovlBoxes()[sel], sx = 0.5 / mw, sy = 0.5 / mh, k = on.dataset.onudge;
@@ -4138,7 +4150,7 @@ $("#chat-in").addEventListener("keydown", e => { if (e.key === "Enter" && (e.met
 document.addEventListener("keydown", e => { if (e.key === "Escape" && sheets.length) closeSheet(sheets[sheets.length - 1]); });
 
 /* ---------- app: budget / backup strip, settings, automatic backup, updates ---------- */
-const APP_VERSION = "2026-11-11-1";
+const APP_VERSION = "2026-11-11-2";
 const fmtGB = b => (b / 1e9).toFixed(b >= 1e10 ? 0 : 1) + "GB";
 const fmtTime = t => t ? new Date(t).toLocaleString("ja-JP", { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" }) : "まだありません";
 function setPill(el, { val, ratio, state }) {
