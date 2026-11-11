@@ -2162,11 +2162,11 @@ const geckoSpec = g => {
   const cb = g.origin === "自家繁殖" ? "" : cbText(g), sale = isSale(g) && !isBreeding(g);
   const het = geneLine(g) ? { t: sale ? toEnglish(geneLine(g)) : mz(geneLine(g)), s: true } : null;
   const birth = { t: [dot(g.birthDate), sale && g.incubTemp ? g.incubTemp + "℃" : ""].filter(Boolean).join("  ") };
-  /* own-bred geckos (for sale too) show both parents on one small line, which is what fits under the birthday:
-     ♂Tangerine Raptor × ♀Mack Snow (the parent's ID when it has no morph) */
+  /* own-bred geckos (for sale too) show the parents on two small lines under the birthday:
+     ♂Mack Snow / ♀Tangerine RAPTOR (the parent's ID when it has no morph) */
   const pm = id => { const m = morphOf(id); return m ? (sale ? toEnglish(m) : mz(m)) : id; };
-  const own = g.origin === "自家繁殖" && (g.sireId || g.damId) ? { t: [g.sireId ? "♂" + pm(g.sireId) : "", g.damId ? "♀" + pm(g.damId) : ""].filter(Boolean).join(" × "), s: true } : null;
-  return { id: g.id, tag: g.sex === "♂" || g.sex === "♀" ? g.sex : "", rows: [{ t: (sale ? morphEnOf(g) : mz(g.morph)) || "モルフ未入力", b: true, wrap: 2 }, het, birth, cb ? { t: cb } : null, ...(own ? [own] : sale ? [] : par)].filter(r => r && r.t) };
+  const own = g.origin === "自家繁殖" && (g.sireId || g.damId) ? [g.sireId ? { t: "♂" + pm(g.sireId), s: true } : null, g.damId ? { t: "♀" + pm(g.damId), s: true } : null].filter(Boolean) : null;
+  return { id: g.id, tag: g.sex === "♂" || g.sex === "♀" ? g.sex : "", rows: [{ t: (sale ? morphEnOf(g) : mz(g.morph)) || "モルフ未入力", b: true, wrap: 2 }, het, birth, cb ? { t: cb } : null, ...(own || (sale ? [] : par))].filter(r => r && r.t) };
 };
 const geckoSpecs = async list => { await loadParents(list); return list.map(geckoSpec); };
 const eggSpec = e => ({ id: e.id, tag: "卵", rows: [{ t: `♀${e.damId} × ♂${e.sireId || "?"}`, wrap: 2 }, { t: `産卵 ${sdot(e.layDate)}${e.temp ? "  " + shortPlan(e.temp, e.plan) : ""}` }, { t: `予定 ${sdot(e.expectedHatch)}` }] });
@@ -2191,10 +2191,10 @@ function drawTag(ctx, sp, x, y, w, h) {
   ctx.fillText(head, tx, ty, iw);
   if (sp.tag) { ctx.font = `700 ${tagSize}px ${LJP}`; ctx.fillText(sp.tag, tx + iw + h * 0.05, ty + (idSize - tagSize) * 0.6, tagW); }
   ty += idSize * 1.14;
-  for (const r of sp.rows) {
-    if (!r.t) continue;
-    let fs = Math.round(h * (r.b ? 0.155 : r.s ? 0.095 : 0.11));
-    if (ty + fs > bottom) break;
+  /* every row is laid out at one scale; when they do not all fit under the ID, the scale goes down (to 70%)
+     before any row is left off */
+  const plan = k => sp.rows.filter(r => r.t).map(r => {
+    let fs = Math.round(h * (r.b ? 0.155 : r.s ? 0.095 : 0.11) * k);
     /* a line may be squeezed to 78% of its width before it wraps to the next line; one word (no space) that fits
        squeezed to 68% stays on one line. Text that still does not fit its lines (the morph: two) is drawn smaller,
        down to 50%, rather than cut with … */
@@ -2209,7 +2209,15 @@ function drawTag(ctx, sp, x, y, w, h) {
     let lines = layout(fs);
     while (cut(lines) && fs > min) { fs = Math.max(min, Math.round(fs * 0.92)); lines = layout(fs); }
     if (cut(lines)) for (fs = base, lines = layout(fs, true); cut(lines) && fs > min;) { fs = Math.max(min, Math.round(fs * 0.92)); lines = layout(fs, true); }
-    for (const l of lines) { if (ty + fs > bottom) break; ctx.fillText(l, tx, ty, tw); ty += fs * 1.1; }
+    return { r, fs, lines };
+  });
+  const height = P => P.reduce((a, x, i) => a + x.lines.length * x.fs * 1.1 - (i === P.length - 1 ? x.fs * 0.1 : 0), 0);
+  let P = plan(1);
+  for (let k = 0.95; height(P) > bottom - ty && k >= 0.7; k -= 0.05) P = plan(k);
+  for (const x of P) {
+    if (ty + x.fs > bottom) break;
+    ctx.font = `${x.r.b ? 700 : 500} ${x.fs}px ${LJP}`;
+    for (const l of x.lines) { if (ty + x.fs > bottom) break; ctx.fillText(l, tx, ty, tw); ty += x.fs * 1.1; }
   }
   ctx.restore();
 }
@@ -4390,7 +4398,7 @@ $("#chat-in").addEventListener("keydown", e => { if (e.key === "Enter" && (e.met
 document.addEventListener("keydown", e => { if (e.key === "Escape" && sheets.length) closeSheet(sheets[sheets.length - 1]); });
 
 /* ---------- app: budget / backup strip, settings, automatic backup, updates ---------- */
-const APP_VERSION = "2026-11-12-1";
+const APP_VERSION = "2026-11-12-2";
 const fmtGB = b => (b / 1e9).toFixed(b >= 1e10 ? 0 : 1) + "GB";
 const fmtTime = t => t ? new Date(t).toLocaleString("ja-JP", { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" }) : "まだありません";
 function setPill(el, { val, ratio, state }) {
