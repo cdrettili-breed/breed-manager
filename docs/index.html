@@ -2728,7 +2728,7 @@ async function importTemplate() {
     [3, "♀", "マックスノー", "", "66%het トレンパー", "2026-07-20", "販売用", "自家繁殖", "", "", "", 25000, 15000, 1, 2, "", "", "", "", 31.5]]);
   ex["!cols"] = IMP_COLS.map(c => ({ wch: c[2] }));
   X.utils.book_append_sheet(wb, ex, "記入例");
-  const help = X.utils.aoa_to_sheet([["Breed Manager 個体の取り込み"], [""], ["「個体」シートに1行1頭で入れて、アプリの 設定 → 個体をまとめて取り込む → Excelから取り込む で選んでください。"],
+  const help = X.utils.aoa_to_sheet([["Breed Manager 個体の取り込み"], [""], ["「個体」シートに1行1頭で入れて、共有を「リンクを知っている全員（閲覧者）」にしてリンクをコピーし、アプリの 設定 → 個体をまとめて取り込む に貼り付けてください。"],
     ["1行目の見出しは消したり並べ替えたりしないでください。空欄の項目は入れなくて大丈夫です。IDはアプリが自動で付けます。"], [""], ["列", "書き方"], ...IMP_COLS.map(c => [c[1], c[3]])]);
   help["!cols"] = [{ wch: 12 }, { wch: 70 }];
   X.utils.book_append_sheet(wb, help, "説明");
@@ -2736,8 +2736,19 @@ async function importTemplate() {
   return saveFile("個体取り込み用.xlsx", new Blob([out], { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" }));
 }
 /* reads the first sheet that has the 番号/モルフ header, and turns each filled row into a gecko to register */
+/* a Google スプレッドシート shared as "anyone with the link can view": its tab is fetched as CSV (the tab in the link, or the first one) */
+async function fetchSheetCsv(url) {
+  const m = String(url).match(/\/spreadsheets\/d\/([\w-]+)/); if (!m) throw new Error("GoogleスプレッドシートのリンクをURLごと貼り付けてください");
+  const gid = (String(url).match(/[#&?]gid=(\d+)/) || [])[1];
+  const tries = [`https://docs.google.com/spreadsheets/d/${m[1]}/export?format=csv${gid ? "&gid=" + gid : ""}`,
+    `https://docs.google.com/spreadsheets/d/${m[1]}/gviz/tq?tqx=out:csv&headers=1${gid ? "&gid=" + gid : "&sheet=" + encodeURIComponent("個体")}`];
+  for (const u of tries) {
+    try { const r = await fetch(u, { credentials: "omit" }); if (!r.ok) continue; const t = await r.text(); if (t && !/^\s*<!DOCTYPE|<html/i.test(t)) return t; } catch {}
+  }
+  throw new Error("スプレッドシートを読めませんでした。共有を「リンクを知っている全員（閲覧者）」にしてください");
+}
 async function readImport(file) {
-  const X = await loadXLSX(), wb = X.read(await file.arrayBuffer(), { type: "array", cellDates: true });
+  const X = await loadXLSX(), wb = typeof file === "string" ? X.read(file, { type: "string", raw: true }) : X.read(await file.arrayBuffer(), { type: "array", cellDates: true });
   const name = wb.SheetNames.find(n => n === "個体") || wb.SheetNames.find(n => n !== "記入例" && n !== "説明") || wb.SheetNames[0];
   const rows = X.utils.sheet_to_json(wb.Sheets[name], { header: 1, raw: true, defval: "" });
   const head = (rows[0] || []).map(h => String(h).trim()), col = Object.fromEntries(IMP_COLS.map(([k, l]) => [k, head.indexOf(l)]));
@@ -2789,10 +2800,12 @@ function importSheet() {
     const draw = () => {
       const bad = items ? items.filter(x => x.errs.length) : [];
       s.body.innerHTML = `
-        <div class="infobox"><b>1. 取り込み用のExcelを出力</b><br><span class="small">1行1頭で入れる表です。「記入例」と「説明」のシートも入っています。パソコンやiPhoneのExcel・Numbersで入れてください。</span>
-          <div style="margin-top:8px"><button class="btn primary" data-im="tpl">取り込み用のExcelを出力</button></div></div>
-        <div class="infobox" style="margin-top:10px"><b>2. 入れ終わったExcelを取り込む</b><br><span class="small">.xlsx と .csv が使えます。登録の前に内容を確認できます。</span>
-          <div style="margin-top:8px"><button class="btn" data-im="pick">Excelから取り込む</button></div><input type="file" id="im-file" accept=".xlsx,.xls,.csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,text/csv" hidden></div>
+        <div class="infobox"><b>1. 取り込み用のスプレッドシートを作る</b><br><span class="small">ボタンで取り込み用の表（1行1頭・「記入例」「説明」シート付き）を出力し、共有画面で<b>Googleスプレッドシート</b>アプリを選ぶか、Googleドライブに入れて開くと、そのままスプレッドシートとして使えます（ドライブでは「Googleスプレッドシートとして保存」を選んでください）。</span>
+          <div style="margin-top:8px"><button class="btn primary" data-im="tpl">取り込み用の表を出力</button></div></div>
+        <div class="infobox" style="margin-top:10px"><b>2. 入れ終わったスプレッドシートを取り込む</b><br><span class="small">スプレッドシートの「共有」で一般的なアクセスを<b>「リンクを知っている全員」（閲覧者）</b>にして、リンクをコピーして貼り付けてください。「個体」シートを開いた状態のリンクを使います。取り込んだ後は共有を「制限付き」に戻して大丈夫です。</span>
+          <div class="idrow" style="margin-top:8px"><input id="im-url" type="url" inputmode="url" placeholder="https://docs.google.com/spreadsheets/d/…" autocomplete="off" style="font-size:16px"><button class="btn" data-im="url" style="flex:none">読み取る</button></div>
+          <p class="small" style="margin:8px 0 0">Excel・Numbers・CSVのファイルからも取り込めます。</p>
+          <div style="margin-top:6px"><button class="btn sm" data-im="pick">ファイルから取り込む</button></div><input type="file" id="im-file" accept=".xlsx,.xls,.csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,text/csv" hidden></div>
         <p class="note" id="im-msg"></p>
         ${items ? `
           <h3 class="sec-h">読み取った個体 <span class="count">${items.length}頭${bad.length ? `・直すところ ${bad.length}行` : ""}</span></h3>
@@ -2808,6 +2821,11 @@ function importSheet() {
       const msg = $("#im-msg", s.body);
       if (b.dataset.im === "tpl") { b.disabled = true; msg.textContent = "Excelを作っています…"; try { await importTemplate(); msg.textContent = ""; } catch (x) { msg.textContent = x.message; } finally { b.disabled = false; } }
       else if (b.dataset.im === "pick") $("#im-file", s.body).click();
+      else if (b.dataset.im === "url") {
+        const url = $("#im-url", s.body).value.trim(); if (!url) { msg.textContent = "スプレッドシートのリンクを貼り付けてください"; return; }
+        b.disabled = true; msg.textContent = "スプレッドシートを読み取っています…";
+        try { items = await readImport(await fetchSheetCsv(url)); draw(); } catch (x) { msg.textContent = "読み取れませんでした: " + (x?.message || x); b.disabled = false; }
+      }
       else if (b.dataset.im === "go") {
         if (!confirm(items.length + "頭を登録しますか？")) return;
         b.disabled = true;
@@ -4367,7 +4385,7 @@ $("#chat-in").addEventListener("keydown", e => { if (e.key === "Enter" && (e.met
 document.addEventListener("keydown", e => { if (e.key === "Escape" && sheets.length) closeSheet(sheets[sheets.length - 1]); });
 
 /* ---------- app: budget / backup strip, settings, automatic backup, updates ---------- */
-const APP_VERSION = "2026-11-11-4";
+const APP_VERSION = "2026-11-11-5";
 const fmtGB = b => (b / 1e9).toFixed(b >= 1e10 ? 0 : 1) + "GB";
 const fmtTime = t => t ? new Date(t).toLocaleString("ja-JP", { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" }) : "まだありません";
 function setPill(el, { val, ratio, state }) {
@@ -4588,8 +4606,8 @@ function settingsSheet(focus) {
         <button class="btn" data-sx="pairlines" style="align-self:flex-start">記号の決まりを開く</button>
       </section>
       <section class="setsec" id="sec-import"><h3>個体をまとめて取り込む</h3>
-        <p class="note" style="margin:0">今いる個体をExcelでまとめて登録できます。取り込み用のExcelを出力して、1行1頭で入れてから取り込みます。</p>
-        <button class="btn" data-sx="import" style="align-self:flex-start">Excelで取り込む</button>
+        <p class="note" style="margin:0">今いる個体をGoogleスプレッドシート（またはExcel）でまとめて登録できます。取り込み用の表を出力して、1行1頭で入れてから取り込みます。</p>
+        <button class="btn" data-sx="import" style="align-self:flex-start">スプレッドシートで取り込む</button>
       </section>
       <section class="setsec" id="sec-card"><h3>名刺（プライスカード）</h3>
         <p class="note" style="margin:0">サイズ・載せる項目・モルフの表記・QRの位置・店名・ロゴ・一番下の文字を、自分のプライスカードに合わせて変えられます。</p>
