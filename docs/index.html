@@ -561,7 +561,7 @@ function normSex(s) {
 }
 const GFIELDS = ["name", "sex", "morph", "base", "homo", "het", "morphEn", "birthDate", "incubTemp", "origin", "breeder", "purchasePrice", "price", "wholesalePrice", "sireId", "damId", "clutchId", "eggId", "status", "grade", "breeding", "forSale",
   "soldPrice", "soldDate", "saleChannel", "saleNotes", "deathDate", "weight", "notes", "packNo",
-  "consignee", "consignDate", "consignPrice", "consignFee", "consignNote", "consignFrom", "consignSrcId", "locality", "sireMorph", "sireHet", "damMorph", "damHet"];
+  "consignee", "consignDate", "consignPrice", "consignFee", "consignNote", "consignFrom", "consignSrcId", "locality", "sireMorph", "sireHet", "damMorph", "damHet", "cardText"];
 const GLABEL = { name: "呼び名", sex: "性別", morph: "モルフ", base: "ベースモルフ", homo: "homo", het: "het", breeder: "ブリーダー", morphEn: "英語モルフ名", birthDate: "生年月日", incubTemp: "孵化温度", origin: "由来", purchasePrice: "購入価格", sireId: "父", damId: "母", clutchId: "産卵", eggId: "卵", notes: "メモ", breeding: "用途", forSale: "用途", locality: "産地", sireMorph: "父のモルフ", sireHet: "父のhet", damMorph: "母のモルフ", damHet: "母のhet" };
 function cleanGecko(x) {
   const o = {};
@@ -577,6 +577,7 @@ function cleanGecko(x) {
     else if (k === "grade") { v = String(v || "").trim().toUpperCase(); if (v && !GRADES.includes(v)) throw new Error("評価は A〜E です"); }
     else if (k === "saleChannel") { v = String(v || "").trim(); if (v && !CHANNELS.includes(v)) throw new Error("販売区分は 小売り・業販 です"); }
     else if (k === "status") { v = String(v || "").trim(); if (!STATUSES.includes(v)) throw new Error("ステータスは " + STATUSES.join("・") + " のいずれかです"); }
+    else if (k === "cardText") v = v && typeof v === "object" ? Object.fromEntries(Object.entries(v).filter(([q]) => CARD_TEXT_KEYS.includes(q)).map(([q, t]) => [q, String(t ?? "").trim()])) : null;
     else v = v == null ? "" : String(v).trim();
     o[k] = v;
   }
@@ -1507,7 +1508,7 @@ function fieldHTML(f, v) {
   let c;
   if (f.type === "select") c = `<select id="${id}">${f.options.map(o => { const [val, lab] = optPair(o); return `<option value="${esc(val)}"${String(val) === String(v) ? " selected" : ""}>${esc(lab)}</option>`; }).join("")}</select>`;
   /* a parent field also reads the parent's QR (f.scan is the sex expected) */
-  if (f.type === "select" && f.scan) c = `<div class="idrow">${c}<button type="button" class="btn" data-scanfor="${id}" data-sex="${esc(f.scan)}" aria-label="${esc(f.label)}をQRで読み取る" style="flex:none">${QR_ICON}QR</button></div>`;
+  if (f.type === "select") { if (f.scan) c = `<div class="idrow">${c}<button type="button" class="btn" data-scanfor="${id}" data-sex="${esc(f.scan)}" aria-label="${esc(f.label)}をQRで読み取る" style="flex:none">${QR_ICON}QR</button></div>`; }
   else if (f.type === "seg") c = `<div class="seg" role="radiogroup" aria-label="${esc(f.label)}">${f.options.map((o, i) => { const [val, lab] = optPair(o); return `<label><input type="radio" name="${id}" id="${id}-${i}" value="${esc(val)}"${String(val) === String(v) ? " checked" : ""}><span>${esc(lab)}</span></label>`; }).join("")}</div>`;
   else if (f.type === "textarea") c = `<textarea id="${id}" rows="2" placeholder="${esc(f.ph || "")}">${esc(v)}</textarea>`;
   else if (f.type === "het") c = `<input id="${id}" type="text" value="${esc(v)}" placeholder="入力すると候補が出ます（例 え → エクリプス）" autocomplete="off" data-ac="gene" data-gkind="het">
@@ -1618,6 +1619,13 @@ document.addEventListener("change", e => {
   inp.closest(".field")?.querySelector(".acbox")?.setAttribute("hidden", "");
   if (inp.dataset.gbase || inp.dataset.ghomo) autoGeno(inp);
 });
+/* choosing a breeder fills in the country remembered for them, while 産地 is still empty */
+function fillBreederCountry(inp) {
+  const sel = inp.closest("form")?.querySelector("#f-locality"), c = breederCountry(inp.value); if (!sel || sel.value || !c) return;
+  if (![...sel.options].some(o => o.value === c)) sel.add(new Option(c, c));
+  sel.value = c;
+}
+document.addEventListener("change", e => { if (e.target.id === "f-breeder") fillBreederCountry(e.target); });
 const acToken = v => { const m = String(v).match(/(\S*)$/); return m ? m[1] : ""; };
 /* names typed before (breeders): matched anywhere in the name, hiragana finding katakana */
 const kanaFold = s => fold(s).replace(/[ぁ-ゖ]/g, c => String.fromCharCode(c.charCodeAt(0) + 0x60)).replace(/\s+/g, "");
@@ -1689,7 +1697,7 @@ document.addEventListener("click", e => {
     inp.value = rest;
     const root = inp.closest("form, .sheet, section") || document, k = inp.id.slice(2);
     addGene(inp, inp.dataset.gkind, c.dataset.acpick, pct || hetPct(root, k));
-  } else if (inp.dataset.ac === "hist") inp.value = c.dataset.acpick;
+  } else if (inp.dataset.ac === "hist") { inp.value = c.dataset.acpick; if (inp.id === "f-breeder") fillBreederCountry(inp); }
   else inp.value = inp.value.replace(/(\S*)$/, c.dataset.acpick) + " ";
   c.parentElement.hidden = true;
   if (inp.dataset.gbase || inp.dataset.ghomo) autoGeno(inp);
@@ -1733,6 +1741,7 @@ function openForm({ title, fields, values = {}, submit = "保存", onSubmit, int
         const inp = $("#f-" + ch.dataset.fill, form); if (!inp) return;
         inp.value = !ch.dataset.val ? "" : ch.dataset.append && inp.value.trim() ? (inp.value.split(/\s+/).includes(ch.dataset.val) ? inp.value : inp.value.trim() + " " + ch.dataset.val) : ch.dataset.val;
         if (inp.dataset.gbase || inp.dataset.ghomo) autoGeno(inp);
+        if (inp.id === "f-breeder") fillBreederCountry(inp);
       });
       form.addEventListener("submit", async e => {
         e.preventDefault(); btn.disabled = true; err.hidden = true;
@@ -1751,11 +1760,6 @@ const frequentMorphs = (n = 8) => {
 const frequentBreeders = (n = 6) => {
   const cnt = new Map();
   for (const g of [...S.geckos.values(), ...(S.archive || [])]) if (g.breeder) cnt.set(g.breeder, (cnt.get(g.breeder) || 0) + 1);
-  return [...cnt.entries()].sort((a, b) => b[1] - a[1]).slice(0, n).map(e => e[0]);
-};
-const frequentLocalities = (n = 6) => {
-  const cnt = new Map();
-  for (const g of [...S.geckos.values(), ...(S.archive || [])]) if (g.locality) cnt.set(g.locality, (cnt.get(g.locality) || 0) + 1);
   return [...cnt.entries()].sort((a, b) => b[1] - a[1]).slice(0, n).map(e => e[0]);
 };
 const parentOptions = sex => [["", "—（なし）"], ...[...S.geckos.values()].filter(g => isBreeding(g) && g.sex === sex).sort((a, b) => a.id.localeCompare(b.id)).map(g => [g.id, g.id + "  " + (mz(g.morph) || "")])];
@@ -1777,7 +1781,8 @@ function geckoFields(mode, cur = {}) {
     { k: "grade", label: "評価", type: "seg", options: [["", "なし"], ...GRADES], def: "" },
     { k: "origin", label: "由来", type: "seg", options: ["自家繁殖", "購入", "その他"], def: "購入" },
     { k: "breeder", label: "ブリーダー（誰のCBか・ラベルに印刷）", ph: "入力するとこれまでの名前が候補に出ます", chips: frequentBreeders(), hist: frequentBreeders(Infinity), showIf: v => v.origin !== "自家繁殖" },
-    { k: "locality", label: "産地（名刺に印刷）", ph: "例 国内CB・アメリカ", chips: frequentLocalities(), hist: frequentLocalities(Infinity), showIf: v => v.origin !== "自家繁殖" },
+    { k: "locality", label: "産地（国・名刺に2文字で印刷）", type: "select", showIf: v => v.origin !== "自家繁殖",
+      options: [["", "—（ブリーダーの国を使う）"], ...COUNTRIES.map(([c, n]) => [c, c + "  " + n]), ...(cur.locality && !COUNTRIES.some(c => c[0] === cur.locality) ? [[cur.locality, cur.locality]] : [])] },
     { k: "purchasePrice", label: "購入価格（円）", type: "number", ph: "例 15000", chips: ["5000", "10000", "15000", "20000", "30000", "50000"], showIf: v => v.origin !== "自家繁殖" },
     { k: "notes", label: "メモ", type: "textarea", ph: "任意" },
     { k: "sireId", label: "父", type: "select", scan: "♂", options: parentOptions("♂").concat(cur.sireId && !S.geckos.has(cur.sireId) ? [[cur.sireId, cur.sireId]] : []), adv: true, showIf: v => v.origin !== "購入" },
@@ -1801,6 +1806,7 @@ function geckoFields(mode, cur = {}) {
 function geckoValuesOut(v) {
   const o = { ...v, ...useFlags(v.use) }; delete o.use;
   if (o.origin === "自家繁殖") { o.purchasePrice = ""; o.breeder = ""; o.locality = ""; }
+  else rememberBreederCountry(o.breeder, o.locality);
   if (o.origin === "購入") { o.sireId = ""; o.damId = ""; } else { o.sireMorph = ""; o.sireHet = ""; o.damMorph = ""; o.damHet = ""; }
   return o;
 }
@@ -1824,25 +1830,32 @@ function newGeckoForm(pre = {}, done = []) {
 function editGeckoForm(g) {
   openForm({
     title: g.id + " を編集", fields: geckoFields("edit", g), moreLabel: "父母・孵化温度・体重・英語名など",
-    values: { ...g, use: useOf(g), birthDate: g.birthDate || "-", grade: g.grade || "", incubTemp: g.incubTemp != null ? String(g.incubTemp) : "", purchasePrice: g.purchasePrice ?? "", price: g.price ?? "", wholesalePrice: g.wholesalePrice ?? "", weight: "", origin: g.origin || "購入" },
+    values: { ...g, use: useOf(g), birthDate: g.birthDate || "-", grade: g.grade || "", incubTemp: g.incubTemp != null ? String(g.incubTemp) : "", purchasePrice: g.purchasePrice ?? "", price: g.price ?? "", wholesalePrice: g.wholesalePrice ?? "", weight: "", origin: g.origin || "購入", locality: countryCode(g.locality) },
     onSubmit: async v => { const o = geckoValuesOut(v); if (o.weight === "") delete o.weight; await updateGecko(g.id, o); return "保存しました"; }
   });
 }
-/* before a gecko goes on a price card (the 名刺 button, packing mode): what the card will say, open to fixing in place —
-   above all the morph and the parents. Nothing is written when nothing was changed. */
-const CHECK_KEYS = ["morph", "homo", "het", "birthDate", "origin", "locality", "sireId", "damId", "sireMorph", "sireHet", "damMorph", "damHet"];
+/* before a gecko goes on a price card (the 名刺 button, packing mode): what the card will say, open to rewriting for the
+   card alone — kept in g.cardText as the parts that differ from what the ledger gives; the gecko's own record is not touched */
 function checkGeckoForm(g, { title, submit, then }) {
-  const fields = geckoFields("edit", g).filter(f => CHECK_KEYS.includes(f.k)).map(f => ({ ...f, adv: false }));
+  const auto = cardSpec({ ...g, cardText: null }).raw, cur = cardSpec(g).raw;
+  const fields = [
+    { k: "morph", label: "モルフ（het込み）", type: "textarea" },
+    { k: "sex", label: "雌雄", type: "seg", options: [["♂", "♂"], ["♀", "♀"], ["", "なし"]], def: "" },
+    { k: "sire", label: "父親" }, { k: "sireHet", label: "父親het" },
+    { k: "dam", label: "母親" }, { k: "damHet", label: "母親het" },
+    { k: "birth", label: "誕生日（名刺に印刷される形）", ph: "例 26   07   20" },
+    { k: "origin", label: "自家繁殖（〇）・産地（国の2文字）", ph: "例 〇 / US", chips: ["〇", ...COUNTRIES.slice(0, 7).map(c => c[0])] }];
+  const edited = g.cardText && Object.keys(g.cardText).length;
   openForm({ title, submit, fields,
-    intro: `<div class="infobox">${sxHTML(g.sex)} <b class="mono">${esc(g.id)}</b> の名刺に印刷される内容です。違っていれば直してから進んでください。</div>`,
-    values: { ...g, birthDate: g.birthDate || "-", origin: g.origin || "購入" },
+    intro: `<div class="infobox">${sxHTML(g.sex)} <b class="mono">${esc(g.id)}</b> の名刺に印刷される内容です。ここで直した内容は<b>名刺だけ</b>に使われ、個体の情報は変わりません。${edited ? `<br><span class="small">この個体は名刺用に直した内容があります。</span>` : ""}</div>`,
+    values: Object.fromEntries(CARD_TEXT_KEYS.map(k => [k, cur[k] ?? ""])),
+    extra: edited ? [{ label: "個体の情報どおりに戻す", onClick: async () => { await updateGecko(g.id, { cardText: null }, "名刺の内容を個体の情報どおりに戻す"); return then(g, true); } }] : [],
     onSubmit: async v => {
-      const o = { ...v };
-      if (o.origin === "自家繁殖") o.locality = "";
-      if (o.origin === "購入") { o.sireId = ""; o.damId = ""; } else { o.sireMorph = ""; o.sireHet = ""; o.damMorph = ""; o.damHet = ""; }
-      const changed = Object.keys(o).some(k => String(o[k] ?? "").trim() !== String(g[k] ?? "").trim());
-      const g2 = changed ? await updateGecko(g.id, o, "名刺の前に確認して修正") : g;
-      return then(g2 || g, changed);
+      const diff = {};
+      for (const k of CARD_TEXT_KEYS) { const t = String(v[k] ?? "").replace(/\n+/g, " ").trim(); if (t !== String(auto[k] ?? "").trim()) diff[k] = t; }
+      const next = Object.keys(diff).length ? diff : null, changed = JSON.stringify(next) !== JSON.stringify(g.cardText && Object.keys(g.cardText).length ? g.cardText : null);
+      if (changed) await updateGecko(g.id, { cardText: next }, next ? "名刺用に内容を直す" : "名刺の内容を個体の情報どおりに戻す");
+      return then(g, changed);
     } });
 }
 function priceChips(g) {
@@ -2171,30 +2184,68 @@ async function ensureCardLogo() {
   if (!cardCfg().logo) return; cardLogoImg();
   const img = cardLogo.img; if (!img.complete) await new Promise(r => { img.onload = img.onerror = r; setTimeout(r, 3000); });
 }
+/* 産地 on the card is the country as two letters (US, JP…); a breeder's country is remembered and used when a gecko has none */
+const COUNTRIES = [["JP", "日本"], ["US", "アメリカ"], ["DE", "ドイツ"], ["IT", "イタリア"], ["GB", "イギリス"], ["NL", "オランダ"], ["FR", "フランス"], ["ES", "スペイン"], ["PL", "ポーランド"], ["CZ", "チェコ"],
+  ["TW", "台湾"], ["KR", "韓国"], ["HK", "香港"], ["CN", "中国"], ["TH", "タイ"], ["PH", "フィリピン"], ["CA", "カナダ"], ["AU", "オーストラリア"]];
+const countryCode = s => {
+  const t = String(s || "").trim(); if (!t) return ""; const up = t.toUpperCase();
+  if (COUNTRIES.some(c => c[0] === up)) return up;
+  const f = COUNTRIES.find(c => t.includes(c[1])) || (/米国|USA/i.test(t) ? ["US"] : /国内|日本/.test(t) ? ["JP"] : /英国|UK/i.test(t) ? ["GB"] : /独国/.test(t) ? ["DE"] : null);
+  return f ? f[0] : t;
+};
+const breederCountry = name => (S.settings.breederCountry || {})[String(name || "").trim()] || "";
+const localityOf = g => countryCode(g.locality) || breederCountry(g.breeder);
+async function rememberBreederCountry(breeder, locality) {
+  const b = String(breeder || "").trim(), c = countryCode(locality); if (!b || !c || breederCountry(b) === c) return;
+  const map = { ...(S.settings.breederCountry || {}), [b]: c }; S.settings.breederCountry = map;
+  try { await saveMeta("settings", { breederCountry: map }); } catch {}
+}
+/* every breeder in the ledger with the country their geckos get on the card when no 産地 is set */
+function breederCountrySheet() {
+  openSheet({ title: "ブリーダーの国", render: s => {
+    const names = [...new Set([...frequentBreeders(Infinity), ...Object.keys(S.settings.breederCountry || {})])];
+    const opts = cur => `<option value="">—</option>${COUNTRIES.map(([c, n]) => `<option value="${c}"${c === cur ? " selected" : ""}>${c}  ${esc(n)}</option>`).join("")}`;
+    s.body.innerHTML = `<p class="note" style="margin:0 0 10px">購入した個体の名刺の産地は、個体に産地が入っていないときブリーダーの国（2文字）になります。個体登録でブリーダーと産地を入れると自動で覚えます。</p>
+      ${names.length ? `<div class="list">${names.map((n, i) => `<div class="row r3" style="gap:8px"><span class="rmain">${esc(n)}</span><select data-bc="${i}" aria-label="${esc(n)} の国" style="width:auto">${opts(breederCountry(n))}</select></div>`).join("")}</div>`
+        : `<div class="empty">まだブリーダーが登録されていません。</div>`}`;
+    s.body.onchange = async e => {
+      const t = e.target.closest("[data-bc]"); if (!t) return;
+      const n = names[+t.dataset.bc], map = { ...(S.settings.breederCountry || {}) };
+      if (t.value) map[n] = t.value; else delete map[n];
+      S.settings.breederCountry = map;
+      try { await saveMeta("settings", { breederCountry: map }); toast(n + " を " + (t.value || "なし") + " にしました"); } catch (x) { toast(x.message); }
+    };
+  } });
+}
+/* what the card says can be rewritten for the card alone (g.cardText); the gecko's own record stays as it is */
+const CARD_TEXT_KEYS = ["morph", "sex", "sire", "sireHet", "dam", "damHet", "birth", "origin"];
 /* the card shows: morph with its het, ♂/♀, the parents' morphs and hets, birthday as 26   07   20, own-bred or where it came from, price, ID */
 const cardSpec = g => {
   const c = cardCfg(), it = c.items, ja = c.lang === "ja", en = c.lang === "en";
   const hetOf = x => x.het ? (en ? toEnglish(x.het) : x.het) : "";
   const names = (en ? [morphEnOf(g) || "—"] : ja ? [g.morph || "—"] : [g.morph || "—", morphEnOf(g)]).filter((x, i, a) => x && a.indexOf(x) === i);
-  const morph = !it.morph ? [] : [...names, hetOf(g)].filter(Boolean);
   const par = id => (id && (S.geckos.get(id) || (S.archive || []).find(a => a.id === id))) || null;
   /* parents from this ledger, or as written in for a bought gecko */
   const typed = (m, h) => m || h ? { morph: m || "", het: h || "", morphEn: "" } : null;
   const sire = par(g.sireId) || typed(g.sireMorph, g.sireHet), dam = par(g.damId) || typed(g.damMorph, g.damHet);
   const pm = p => p ? (en ? morphEnOf(p) : p.morph) || "" : "";
-  const sex = g.sex === "♂" || g.sex === "♀" ? g.sex : "";
-  const birth = (g.birthDate || "").replace(/^\d\d(\d\d)/, "$1").replace(/-/g, "   ");
-  /* own-bred is a 〇 (in the card's own 自家繁殖 blank; "自家繁殖 〇" where the card has no labels), otherwise where it came from */
-  const own = g.origin === "自家繁殖", origin = own ? (en ? "Home bred 〇" : "自家繁殖 〇") : (g.locality || "").trim();
-  const raw = { id: g.id, sex, morph: [names.join(" / "), hetOf(g)].filter(Boolean).join(" "), sire: pm(sire), sireHet: sire ? hetOf(sire) : "", dam: pm(dam), damHet: dam ? hetOf(dam) : "",
-    birth, origin: own ? "〇" : origin, price: g.price != null ? num(g.price) + (c.priceNote ? " " + c.priceNote : "") : "" };
+  const own = g.origin === "自家繁殖";
+  const raw = { id: g.id, sex: g.sex === "♂" || g.sex === "♀" ? g.sex : "", morph: [names.join(" / "), hetOf(g)].filter(Boolean).join(" "),
+    sire: pm(sire), sireHet: sire ? hetOf(sire) : "", dam: pm(dam), damHet: dam ? hetOf(dam) : "",
+    birth: (g.birthDate || "").replace(/^\d\d(\d\d)/, "$1").replace(/-/g, "   "),
+    /* own-bred is a 〇 (in the card's own 自家繁殖 blank), otherwise the country */
+    origin: own ? "〇" : localityOf(g), price: g.price != null ? num(g.price) + (c.priceNote ? " " + c.priceNote : "") : "" };
+  const ov = g.cardText || {}, has = k => typeof ov[k] === "string";
+  for (const k of CARD_TEXT_KEYS) if (has(k)) raw[k] = ov[k];
   /* a parent line: "♂ Tangerine Raptor  het Eclipse" with whichever parts are switched on */
   const parent = (sym, m, h, onM, onH) => { const t = [onM && m, onH && h].filter(Boolean).join("  "); return t ? sym + " " + t : ""; };
-  return { id: it.id ? g.id : "", qid: g.id, sex: it.sex ? sex : "", morph,
+  return { id: it.id ? g.id : "", qid: g.id, sex: it.sex ? raw.sex : "",
+    morph: !it.morph ? [] : has("morph") ? [raw.morph].filter(Boolean) : [...names, hetOf(g)].filter(Boolean),
     sire: parent(en ? "Sire" : "父", raw.sire, raw.sireHet, it.sire, it.sireHet), dam: parent(en ? "Dam" : "母", raw.dam, raw.damHet, it.dam, it.damHet),
     price: it.price && g.price != null ? num(g.price) : "",
-    birth: it.birth && birth ? (en ? "Birth " : "生年月日 ") + birth : "",
-    origin: it.origin ? origin : "",
+    birth: it.birth && raw.birth ? (en ? "Birth " : "生年月日 ") + raw.birth : "",
+    /* where the card has no labels of its own: "自家繁殖 〇" */
+    origin: !it.origin ? "" : own && !has("origin") ? (en ? "Home bred 〇" : "自家繁殖 〇") : raw.origin,
     /* bare values for writing into the blanks of a pre-printed card (its own labels say what each is) */
     raw };
 };
@@ -4087,7 +4138,7 @@ $("#chat-in").addEventListener("keydown", e => { if (e.key === "Enter" && (e.met
 document.addEventListener("keydown", e => { if (e.key === "Escape" && sheets.length) closeSheet(sheets[sheets.length - 1]); });
 
 /* ---------- app: budget / backup strip, settings, automatic backup, updates ---------- */
-const APP_VERSION = "2026-11-09-22";
+const APP_VERSION = "2026-11-11-1";
 const fmtGB = b => (b / 1e9).toFixed(b >= 1e10 ? 0 : 1) + "GB";
 const fmtTime = t => t ? new Date(t).toLocaleString("ja-JP", { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" }) : "まだありません";
 function setPill(el, { val, ratio, state }) {
@@ -4306,6 +4357,7 @@ function settingsSheet(focus) {
       <section class="setsec" id="sec-card"><h3>名刺（プライスカード）</h3>
         <p class="note" style="margin:0">サイズ・載せる項目・モルフの表記・QRの位置・店名・ロゴ・一番下の文字を、自分のプライスカードに合わせて変えられます。</p>
         <button class="btn" data-sx="card" style="align-self:flex-start">プライスカードの設定を開く</button>
+        <button class="btn" data-sx="bcountry" style="align-self:flex-start">ブリーダーの国（名刺の産地）</button>
       </section>
       <section class="setsec" id="sec-printer"><h3>ラベルプリンター</h3>
         <label class="toggle"><input type="checkbox" id="st-b1" ${pref("b1", false) ? "checked" : ""}>ラベルとカップラベルをNIIMBOT B1で印刷する（Bluefy経由）</label>
@@ -4358,6 +4410,7 @@ function settingsSheet(focus) {
         }
         else if (a === "morphs") { morphSheet(); return; }
         else if (a === "card") { cardSettingsSheet(); return; }
+        else if (a === "bcountry") { breederCountrySheet(); return; }
         else if (a === "lang-ja" || a === "lang-en") { const v = a.slice(5); await saveMeta("settings", { morphLang: v }); S.settings.morphLang = v; schedule(); toast(v === "en" ? "モルフ名を英語で表示します" : "モルフ名を日本語で表示します"); }
         else if (a === "trash") { trashSheet(); return; }
         else if (a === "non") { b.disabled = true; await pushEnable(); toast("通知をオンにしました"); }
