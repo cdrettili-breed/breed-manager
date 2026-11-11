@@ -2801,7 +2801,8 @@ function importSheet() {
       const bad = items ? items.filter(x => x.errs.length) : [];
       s.body.innerHTML = `
         <div class="infobox"><b>1. 取り込み用のスプレッドシートを作る</b><br><span class="small">ボタンで取り込み用の表（1行1頭・「記入例」「説明」シート付き）を出力し、共有画面で<b>Googleスプレッドシート</b>アプリを選ぶか、Googleドライブに入れて開くと、そのままスプレッドシートとして使えます（ドライブでは「Googleスプレッドシートとして保存」を選んでください）。</span>
-          <div style="margin-top:8px"><button class="btn primary" data-im="tpl">取り込み用の表を出力</button></div></div>
+          <div class="botacts" style="margin:8px 0 0"><button class="btn abtn primary" data-im="tpl">取り込み用の表を出力</button><a class="btn abtn" href="import-template.xlsx" download="個体取り込み用.xlsx" target="_blank" rel="noopener">ダウンロード</a></div>
+          <p class="small" style="margin:6px 0 0">パソコンからは <span class="mono" style="overflow-wrap:anywhere">${esc(new URL("import-template.xlsx", location.href).href)}</span> でもダウンロードできます。</p></div>
         <div class="infobox" style="margin-top:10px"><b>2. 入れ終わったスプレッドシートを取り込む</b><br><span class="small">スプレッドシートの「共有」で一般的なアクセスを<b>「リンクを知っている全員」（閲覧者）</b>にして、リンクをコピーして貼り付けてください。「個体」シートを開いた状態のリンクを使います。取り込んだ後は共有を「制限付き」に戻して大丈夫です。</span>
           <div class="idrow" style="margin-top:8px"><input id="im-url" type="url" inputmode="url" placeholder="https://docs.google.com/spreadsheets/d/…" autocomplete="off" style="font-size:16px"><button class="btn" data-im="url" style="flex:none">読み取る</button></div>
           <p class="small" style="margin:8px 0 0">Excel・Numbers・CSVのファイルからも取り込めます。</p>
@@ -4385,7 +4386,7 @@ $("#chat-in").addEventListener("keydown", e => { if (e.key === "Enter" && (e.met
 document.addEventListener("keydown", e => { if (e.key === "Escape" && sheets.length) closeSheet(sheets[sheets.length - 1]); });
 
 /* ---------- app: budget / backup strip, settings, automatic backup, updates ---------- */
-const APP_VERSION = "2026-11-11-5";
+const APP_VERSION = "2026-11-11-6";
 const fmtGB = b => (b / 1e9).toFixed(b >= 1e10 ? 0 : 1) + "GB";
 const fmtTime = t => t ? new Date(t).toLocaleString("ja-JP", { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" }) : "まだありません";
 function setPill(el, { val, ratio, state }) {
