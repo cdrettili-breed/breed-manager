@@ -2609,11 +2609,141 @@ function toPdf(specs, type) {
   return pdf.output("blob");
 }
 async function saveFile(name, blob) {
-  if (!S.dl) throw new Error("この端末では印刷用PDFを開けません");
+  const what = /\.pdf$/i.test(name) ? "印刷用PDF" : "ファイル";
+  if (!S.dl) throw new Error("この端末では" + what + "を開けません");
   try { await S.dl.save({ filename: name, data: blob }); return true; }
-  catch (e) { if (e?.code === "declined") return false; throw new Error("印刷用PDFを開けませんでした（" + (e?.code || "不明") + "）"); }
+  catch (e) { if (e?.code === "declined") return false; throw new Error(what + "を開けませんでした（" + (e?.code || "不明") + "）"); }
 }
 const MAX_LABELS = 300;
+
+/* ---------- bulk import from Excel ----------
+   A template (.xlsx) with one row per gecko is handed out; filled in, it is read back here, checked row by row and
+   registered in one go. Parents can point to another row's 番号 or to a gecko already in the ledger. SheetJS is fetched
+   only when this is used. */
+let xlsxP = null;
+const loadXLSX = () => xlsxP || (xlsxP = new Promise((res, rej) => {
+  const s = document.createElement("script"); s.src = "https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js";
+  s.onload = () => res(window.XLSX); s.onerror = () => { xlsxP = null; rej(new Error("Excelを扱う部品を読み込めませんでした（ネットにつないでください）")); };
+  document.head.append(s);
+}));
+const IMP_COLS = [
+  ["no", "番号", 6, "1, 2, 3…（父・母の指定に使います）"], ["sex", "性別", 6, "♂ / ♀ / 不明（オス・メスでも可）"], ["morph", "モルフ", 26, "例 タンジェリン ラプター"],
+  ["homo", "homo", 14, "見た目に出ている潜性遺伝子（例 トレンパー）"], ["het", "het", 18, "例 66%het エクリプス"], ["birthDate", "生年月日", 12, "2026-07-20 / 2026-07 / 2026（不明なら空欄）"],
+  ["use", "用途", 8, "繁殖用 / 販売用 / 両方（空欄なら繁殖用）"], ["origin", "由来", 8, "自家繁殖 / 購入 / その他（空欄なら購入）"], ["breeder", "ブリーダー", 16, "購入した個体のブリーダー"],
+  ["locality", "産地", 6, "国の2文字（US・JP・DE…）。空欄ならブリーダーの国"], ["purchasePrice", "購入価格", 10, "円"], ["price", "小売価格", 10, "円"], ["wholesalePrice", "卸価格", 10, "円"],
+  ["sire", "父", 10, "この表の番号、またはアプリに登録済みのID（例 P-003）"], ["dam", "母", 10, "同上"],
+  ["sireMorph", "父のモルフ", 18, "親がアプリにいない購入個体のとき"], ["sireHet", "父のhet", 14, ""], ["damMorph", "母のモルフ", 18, ""], ["damHet", "母のhet", 14, ""],
+  ["incubTemp", "孵化温度", 8, "℃"], ["grade", "評価", 6, "A〜E"], ["name", "呼び名", 10, ""], ["notes", "メモ", 24, ""]];
+async function importTemplate() {
+  const X = await loadXLSX(), wb = X.utils.book_new();
+  const ws = X.utils.aoa_to_sheet([IMP_COLS.map(c => c[1])]);
+  ws["!cols"] = IMP_COLS.map(c => ({ wch: c[2] }));
+  /* 生年月日 as text, so 2026-07 stays a year and month instead of turning into a date */
+  const bc = IMP_COLS.findIndex(c => c[0] === "birthDate");
+  for (let r = 1; r <= 300; r++) ws[X.utils.encode_cell({ r, c: bc })] = { t: "s", v: "", z: "@" };
+  ws["!ref"] = X.utils.encode_range({ s: { r: 0, c: 0 }, e: { r: 300, c: IMP_COLS.length - 1 } });
+  X.utils.book_append_sheet(wb, ws, "個体");
+  const ex = X.utils.aoa_to_sheet([IMP_COLS.map(c => c[1]),
+    [1, "♂", "マックスノー", "", "het トレンパー", "2024", "繁殖用", "購入", "〇〇レプタイルズ", "US", 30000, "", "", "", "", "スーパーマックスノー", "", "マックスノー", "het トレンパー", "", "A", "", ""],
+    [2, "♀", "トレンパー", "トレンパー", "66%het エクリプス", "2024-08", "繁殖用", "購入", "△△ゲッコー", "JP", 25000],
+    [3, "♀", "マックスノー", "", "66%het トレンパー", "2026-07-20", "販売用", "自家繁殖", "", "", "", 25000, 15000, 1, 2, "", "", "", "", 31.5]]);
+  ex["!cols"] = IMP_COLS.map(c => ({ wch: c[2] }));
+  X.utils.book_append_sheet(wb, ex, "記入例");
+  const help = X.utils.aoa_to_sheet([["Breed Manager 個体の取り込み"], [""], ["「個体」シートに1行1頭で入れて、アプリの 設定 → 個体をまとめて取り込む → Excelから取り込む で選んでください。"],
+    ["1行目の見出しは消したり並べ替えたりしないでください。空欄の項目は入れなくて大丈夫です。IDはアプリが自動で付けます。"], [""], ["列", "書き方"], ...IMP_COLS.map(c => [c[1], c[3]])]);
+  help["!cols"] = [{ wch: 12 }, { wch: 70 }];
+  X.utils.book_append_sheet(wb, help, "説明");
+  const out = X.write(wb, { bookType: "xlsx", type: "array" });
+  return saveFile("個体取り込み用.xlsx", new Blob([out], { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" }));
+}
+/* reads the first sheet that has the 番号/モルフ header, and turns each filled row into a gecko to register */
+async function readImport(file) {
+  const X = await loadXLSX(), wb = X.read(await file.arrayBuffer(), { type: "array", cellDates: true });
+  const name = wb.SheetNames.find(n => n === "個体") || wb.SheetNames.find(n => n !== "記入例" && n !== "説明") || wb.SheetNames[0];
+  const rows = X.utils.sheet_to_json(wb.Sheets[name], { header: 1, raw: true, defval: "" });
+  const head = (rows[0] || []).map(h => String(h).trim()), col = Object.fromEntries(IMP_COLS.map(([k, l]) => [k, head.indexOf(l)]));
+  if (col.morph < 0 && col.sex < 0) throw new Error("見出し（性別・モルフなど）が見つかりません。取り込み用のExcelを使ってください");
+  const ymd = d => d.getFullYear() + "-" + pad(d.getMonth() + 1, 2) + "-" + pad(d.getDate(), 2);
+  const cell = (r, k) => { const v = col[k] >= 0 ? r[col[k]] : ""; return v instanceof Date ? ymd(v) : String(v ?? "").trim(); };
+  const items = [];
+  rows.slice(1).forEach((r, i) => {
+    const v = Object.fromEntries(IMP_COLS.map(([k]) => [k, cell(r, k)]));
+    if (!IMP_COLS.some(([k]) => k !== "no" && v[k])) return;
+    const errs = [], use = v.use.replace(/用$/, "");
+    const o = { sex: v.sex, morph: v.morph, homo: v.homo, het: v.het, birthDate: v.birthDate, breeder: v.breeder, locality: countryCode(v.locality),
+      purchasePrice: v.purchasePrice, price: v.price, wholesalePrice: v.wholesalePrice, sireMorph: v.sireMorph, sireHet: v.sireHet, damMorph: v.damMorph, damHet: v.damHet,
+      incubTemp: v.incubTemp, grade: v.grade.toUpperCase(), name: v.name, notes: v.notes,
+      origin: ["自家繁殖", "購入", "その他"].includes(v.origin) ? v.origin : v.origin ? (errs.push("由来「" + v.origin + "」は 自家繁殖・購入・その他 のどれか"), "購入") : "購入",
+      ...useFlags(!use || use === "繁殖" ? "breeding" : use === "販売" ? "sale" : use === "両方" ? "both" : (errs.push("用途「" + v.use + "」は 繁殖用・販売用・両方 のどれか"), "breeding")) };
+    if (o.grade && !GRADES.includes(o.grade)) { errs.push("評価は A〜E"); o.grade = ""; }
+    if (v.birthDate && !toBirth(v.birthDate)) errs.push("生年月日「" + v.birthDate + "」が読めません");
+    for (const k of ["purchasePrice", "price", "wholesalePrice", "incubTemp"]) if (v[k] && toNum(v[k]) == null) errs.push(IMP_COLS.find(c => c[0] === k)[1] + "は数字で");
+    if (o.origin === "自家繁殖") { o.breeder = ""; o.locality = ""; }
+    items.push({ row: i + 2, no: v.no, o, sire: v.sire, dam: v.dam, errs });
+  });
+  /* parents: another row's 番号, or a gecko already in the ledger */
+  const nos = new Map(items.filter(x => x.no).map(x => [String(x.no), x]));
+  for (const x of items) for (const [k, label] of [["sire", "父"], ["dam", "母"]]) {
+    const p = String(x[k] || "").trim(); if (!p) continue;
+    if (nos.has(p)) { if (nos.get(p) === x) x.errs.push(label + "が自分自身になっています"); else x[k + "Row"] = nos.get(p); }
+    else if (S.geckos.has(normId(p))) x[k + "Id"] = normId(p);
+    else x.errs.push(label + "「" + p + "」がこの表の番号にもアプリにも見つかりません");
+  }
+  return items;
+}
+async function runImport(items, onStep) {
+  for (const [i, x] of items.entries()) {
+    if (x.id) continue; /* registered before a stop: not again */
+    const o = { ...x.o, sireId: x.sireId || "", damId: x.damId || "" };
+    x.id = (await createGecko(o)).id; rememberBreederCountry(o.breeder, o.locality); onStep?.(i + 1);
+  }
+  /* parents named by 番号 are linked once every row has its ID */
+  for (const x of items) {
+    const ch = {}; if (x.sireRow?.id) ch.sireId = x.sireRow.id; if (x.damRow?.id) ch.damId = x.damRow.id;
+    if (Object.keys(ch).length) await updateGecko(x.id, ch);
+  }
+  return items.map(x => x.id);
+}
+function importSheet() {
+  let items = null;
+  openSheet({ title: "個体をまとめて取り込む", render: s => {
+    const draw = () => {
+      const bad = items ? items.filter(x => x.errs.length) : [];
+      s.body.innerHTML = `
+        <div class="infobox"><b>1. 取り込み用のExcelを出力</b><br><span class="small">1行1頭で入れる表です。「記入例」と「説明」のシートも入っています。パソコンやiPhoneのExcel・Numbersで入れてください。</span>
+          <div style="margin-top:8px"><button class="btn primary" data-im="tpl">取り込み用のExcelを出力</button></div></div>
+        <div class="infobox" style="margin-top:10px"><b>2. 入れ終わったExcelを取り込む</b><br><span class="small">.xlsx と .csv が使えます。登録の前に内容を確認できます。</span>
+          <div style="margin-top:8px"><button class="btn" data-im="pick">Excelから取り込む</button></div><input type="file" id="im-file" accept=".xlsx,.xls,.csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,text/csv" hidden></div>
+        <p class="note" id="im-msg"></p>
+        ${items ? `
+          <h3 class="sec-h">読み取った個体 <span class="count">${items.length}頭${bad.length ? `・直すところ ${bad.length}行` : ""}</span></h3>
+          ${items.length ? `<div class="list">${items.map(x => `<div class="row r3" style="${x.errs.length ? "background:var(--warn-bg,#fff4e5)" : ""}"><span class="mono small" style="flex:none;min-width:3.2em">${x.row}行</span>
+            <span class="rmain"><span class="rmorph">${sxHTML(normSex(x.o.sex))} ${esc(x.o.morph || "モルフ未入力")}</span><span class="rsub">${esc(useLabel(x.o))} · ${esc(x.o.origin)}${x.o.birthDate ? " · " + esc(x.o.birthDate) : ""}${x.sire || x.dam ? " · 父 " + esc(x.sire || "—") + " × 母 " + esc(x.dam || "—") : ""}</span>
+            ${x.errs.map(e => `<span class="rsub" style="color:var(--danger,#c0392b);white-space:normal;overflow:visible;text-overflow:clip">${esc(e)}</span>`).join("")}</span></div>`).join("")}</div>` : `<div class="empty">入っている行がありません。</div>`}
+          ${items.length ? `<button class="btn primary block big" data-im="go" style="margin-top:12px"${bad.length ? " disabled" : ""}>${items.length}頭を登録する</button>
+            ${bad.length ? `<p class="note">直すところがある行を、Excelで直してからもう一度取り込んでください。</p>` : `<p class="note">IDは自動で付きます。同じ内容を二度取り込むと二重に登録されるので注意してください。</p>`}` : ""}` : ""}`;
+    };
+    draw();
+    s.body.onclick = async e => {
+      const b = e.target.closest("[data-im]"); if (!b) return;
+      const msg = $("#im-msg", s.body);
+      if (b.dataset.im === "tpl") { b.disabled = true; msg.textContent = "Excelを作っています…"; try { await importTemplate(); msg.textContent = ""; } catch (x) { msg.textContent = x.message; } finally { b.disabled = false; } }
+      else if (b.dataset.im === "pick") $("#im-file", s.body).click();
+      else if (b.dataset.im === "go") {
+        if (!confirm(items.length + "頭を登録しますか？")) return;
+        b.disabled = true;
+        try { const ids = await runImport(items, n => { b.textContent = "登録中… " + n + " / " + items.length; }); items = null; draw(); toast(ids.length + "頭を登録しました（" + ids[0] + " 〜 " + ids[ids.length - 1] + "）"); }
+        catch (x) { toast("途中で止まりました: " + x.message); b.disabled = false; }
+      }
+    };
+    s.body.onchange = async e => {
+      if (e.target.id !== "im-file") return;
+      const f = e.target.files && e.target.files[0]; e.target.value = ""; if (!f) return;
+      $("#im-msg", s.body).textContent = "読み取っています…";
+      try { items = await readImport(f); draw(); } catch (x) { $("#im-msg", s.body).textContent = "読み取れませんでした: " + (x?.message || x); }
+    };
+  } });
+}
 async function specFor(id, type, q = {}) {
   const c = collOf(id), r = await getRec(c, id).catch(() => null);
   if (!r) return null;
@@ -4150,7 +4280,7 @@ $("#chat-in").addEventListener("keydown", e => { if (e.key === "Enter" && (e.met
 document.addEventListener("keydown", e => { if (e.key === "Escape" && sheets.length) closeSheet(sheets[sheets.length - 1]); });
 
 /* ---------- app: budget / backup strip, settings, automatic backup, updates ---------- */
-const APP_VERSION = "2026-11-11-2";
+const APP_VERSION = "2026-11-11-3";
 const fmtGB = b => (b / 1e9).toFixed(b >= 1e10 ? 0 : 1) + "GB";
 const fmtTime = t => t ? new Date(t).toLocaleString("ja-JP", { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" }) : "まだありません";
 function setPill(el, { val, ratio, state }) {
@@ -4366,6 +4496,10 @@ function settingsSheet(focus) {
           <button class="btn" data-sx="padd" style="align-self:flex-start;margin-top:6px">＋ 温度変化を追加</button>
           <p class="note" style="margin:0">温度は3つまで決められます（例: ①31.5℃ → ②25日目から28.5℃ → ③40日目から30℃）。孵化予定日は温度変化も含めて計算します。登録した温度変化は、産卵の記録と卵の「温度・メモ」で選べます。</p></div>
       </section>
+      <section class="setsec" id="sec-import"><h3>個体をまとめて取り込む</h3>
+        <p class="note" style="margin:0">今いる個体をExcelでまとめて登録できます。取り込み用のExcelを出力して、1行1頭で入れてから取り込みます。</p>
+        <button class="btn" data-sx="import" style="align-self:flex-start">Excelで取り込む</button>
+      </section>
       <section class="setsec" id="sec-card"><h3>名刺（プライスカード）</h3>
         <p class="note" style="margin:0">サイズ・載せる項目・モルフの表記・QRの位置・店名・ロゴ・一番下の文字を、自分のプライスカードに合わせて変えられます。</p>
         <button class="btn" data-sx="card" style="align-self:flex-start">プライスカードの設定を開く</button>
@@ -4423,6 +4557,7 @@ function settingsSheet(focus) {
         else if (a === "morphs") { morphSheet(); return; }
         else if (a === "card") { cardSettingsSheet(); return; }
         else if (a === "bcountry") { breederCountrySheet(); return; }
+        else if (a === "import") { importSheet(); return; }
         else if (a === "lang-ja" || a === "lang-en") { const v = a.slice(5); await saveMeta("settings", { morphLang: v }); S.settings.morphLang = v; schedule(); toast(v === "en" ? "モルフ名を英語で表示します" : "モルフ名を日本語で表示します"); }
         else if (a === "trash") { trashSheet(); return; }
         else if (a === "non") { b.disabled = true; await pushEnable(); toast("通知をオンにしました"); }
