@@ -1921,7 +1921,8 @@ function checkGeckoForm(g, { title, submit, then }) {
     { k: "sire", label: "父親" }, { k: "sireHet", label: "父親het" },
     { k: "dam", label: "母親" }, { k: "damHet", label: "母親het" },
     { k: "birth", label: "誕生日（名刺に印刷される形）", ph: "例 26   07   20" },
-    { k: "origin", label: "自家繁殖（〇）・産地（国の2文字）", ph: "例 〇 / US", chips: ["〇", ...COUNTRIES.slice(0, 7).map(c => c[0])] }];
+    { k: "origin", label: "自家繁殖の〇", type: "seg", options: [["〇", "〇を付ける"], ["", "付けない"]], def: "" },
+    { k: "locality", label: "産地（括弧の中・自家繁殖は都道府県、それ以外は国の2文字）", ph: "例 大阪府 / US", chips: [...new Set([S.settings.ownLocality, ...COUNTRIES.slice(0, 7).map(c => c[0])].filter(Boolean))] }];
   const edited = g.cardText && Object.keys(g.cardText).length;
   openForm({ title, submit, fields,
     intro: `<div class="infobox">${sxHTML(g.sex)} <b class="mono">${esc(g.id)}</b> の名刺に印刷される内容です。ここで直した内容は<b>名刺だけ</b>に使われ、個体の情報は変わりません。${edited ? `<br><span class="small">この個体は名刺用に直した内容があります。</span>` : ""}</div>`,
@@ -2271,7 +2272,7 @@ async function ensureCardFont(k = cardCfg().font) {
   const f = CARD_FONTS.find(x => x[0] === k); if (!f || !f[2]) return;
   if (!cardFontLinks.has(k)) { const l = document.createElement("link"); l.rel = "stylesheet"; l.href = "https://fonts.googleapis.com/css2?family=" + f[2].replace(/ /g, "+") + "&display=swap"; document.head.append(l); cardFontLinks.add(k); await new Promise(r => { l.onload = l.onerror = r; setTimeout(r, 4000); }); }
   /* Japanese web fonts come in slices by character, so ask for the characters a card can hold */
-  const text = "0123456789¥,.%/ -ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz〇父母自家繁殖生年月日税込産地het" + [...S.geckos.values()].map(g => (g.morph || "") + (g.het || "") + (g.locality || "") + (g.sireMorph || "") + (g.damMorph || "") + (g.sireHet || "") + (g.damHet || "")).join("") + (cardCfg().priceNote || "") + (cardCfg().shop || "") + (cardCfg().footer || "");
+  const text = "0123456789¥,.%/ -ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz〇父母自家繁殖生年月日税込産地het（）" + (S.settings.ownLocality || "") + [...S.geckos.values()].map(g => (g.morph || "") + (g.het || "") + (g.locality || "") + (g.sireMorph || "") + (g.damMorph || "") + (g.sireHet || "") + (g.damHet || "")).join("") + (cardCfg().priceNote || "") + (cardCfg().shop || "") + (cardCfg().footer || "");
   const uniq = [...new Set(text)].join(""), fam = f[2].split(":")[0];
   try { await Promise.race([Promise.all(["500", "700"].map(w => document.fonts.load(`${w} 20px "${fam}"`, uniq))), new Promise(r => setTimeout(r, 9000))]); } catch {}
 }
@@ -2314,7 +2315,8 @@ function breederCountrySheet() {
   } });
 }
 /* what the card says can be rewritten for the card alone (g.cardText); the gecko's own record stays as it is */
-const CARD_TEXT_KEYS = ["morph", "sex", "sire", "sireHet", "dam", "damHet", "birth", "origin"];
+const CARD_TEXT_KEYS = ["morph", "sex", "sire", "sireHet", "dam", "damHet", "birth", "origin", "locality"];
+const PREFS = "北海道 青森県 岩手県 宮城県 秋田県 山形県 福島県 茨城県 栃木県 群馬県 埼玉県 千葉県 東京都 神奈川県 新潟県 富山県 石川県 福井県 山梨県 長野県 岐阜県 静岡県 愛知県 三重県 滋賀県 京都府 大阪府 兵庫県 奈良県 和歌山県 鳥取県 島根県 岡山県 広島県 山口県 徳島県 香川県 愛媛県 高知県 福岡県 佐賀県 長崎県 熊本県 大分県 宮崎県 鹿児島県 沖縄県".split(" ");
 /* the card shows: morph with its het, ♂/♀, the parents' morphs and hets, birthday as 26   07   20, own-bred or where it came from, price, ID */
 const cardSpec = g => {
   const c = cardCfg(), it = c.items, ja = c.lang === "ja", en = c.lang === "en";
@@ -2331,9 +2333,12 @@ const cardSpec = g => {
   const raw = { id: cid, sex: g.sex === "♂" || g.sex === "♀" ? g.sex : "", morph: [names.join(" / "), hetOf(g)].filter(Boolean).join(" "),
     sire: pm(sire), sireHet: sire ? hetOf(sire) : "", dam: pm(dam), damHet: dam ? hetOf(dam) : "",
     birth: (g.birthDate || "").replace(/^\d\d(\d\d)/, "$1").replace(/-/g, "   "),
-    /* own-bred is a 〇 (in the card's own 自家繁殖 blank), otherwise the country */
-    origin: own ? "〇" : localityOf(g), price: g.price != null ? num(g.price) + (c.priceNote ? " " + c.priceNote : "") : "" };
-  const ov = g.cardText || {}, has = k => typeof ov[k] === "string";
+    /* 自家繁殖・（　）: own-bred gets a 〇 on 自家繁殖 and the breeder's prefecture in the brackets; any other gecko only the country */
+    origin: own ? "〇" : "", locality: own ? (S.settings.ownLocality || "") : localityOf(g),
+    price: g.price != null ? num(g.price) + (c.priceNote ? " " + c.priceNote : "") : "" };
+  const ov = { ...(g.cardText || {}) }, has = k => typeof ov[k] === "string";
+  /* card text kept before the two were apart held the country in origin */
+  if (has("origin") && ov.origin && ov.origin !== "〇" && !has("locality")) { ov.locality = ov.origin; ov.origin = ""; }
   for (const k of CARD_TEXT_KEYS) if (has(k)) raw[k] = ov[k];
   /* a parent line: "♂ Tangerine Raptor  het Eclipse" with whichever parts are switched on */
   const parent = (sym, m, h, onM, onH) => { const t = [onM && m, onH && h].filter(Boolean).join("  "); return t ? sym + " " + t : ""; };
@@ -2342,18 +2347,23 @@ const cardSpec = g => {
     sire: parent(en ? "Sire" : "父", raw.sire, raw.sireHet, it.sire, it.sireHet), dam: parent(en ? "Dam" : "母", raw.dam, raw.damHet, it.dam, it.damHet),
     price: it.price && g.price != null ? num(g.price) : "",
     birth: it.birth && raw.birth ? (en ? "Birth " : "生年月日 ") + raw.birth : "",
-    /* where the card has no labels of its own: "自家繁殖 〇" */
-    origin: !it.origin ? "" : own && !has("origin") ? (en ? "Home bred 〇" : "自家繁殖 〇") : raw.origin,
+    /* where the card has no labels of its own: "自家繁殖 〇（大阪府）" or just the country */
+    origin: !it.origin ? "" : (o => o && raw.locality ? o + "（" + raw.locality + "）" : o || raw.locality)(raw.origin === "〇" ? (en ? "Home bred 〇" : "自家繁殖 〇") : raw.origin),
     /* bare values for writing into the blanks of a pre-printed card (its own labels say what each is) */
     raw };
 };
 /* ---- writing into a pre-printed card: each item has a box (fractions of the card) where its value goes ---- */
 const OVL_FIELDS = [["id", "ID"], ["morph", "モルフ（het込み）"], ["sex", "雌雄"], ["sire", "父親"], ["sireHet", "父親het"], ["dam", "母親"], ["damHet", "母親het"],
-  ["birth", "誕生日"], ["origin", "自家繁殖・産地"], ["price", "価格"], ["qr", "QR"]];
+  ["birth", "誕生日"], ["origin", "自家繁殖の〇"], ["locality", "産地（　）"], ["price", "価格"], ["qr", "QR"]];
 const OVL_DEF = { id: { x: .06, y: .06, w: .45, h: .13, on: true }, sex: { x: .55, y: .06, w: .12, h: .13, on: true }, morph: { x: .06, y: .21, w: .62, h: .17, on: true },
   sire: { x: .06, y: .40, w: .62, h: .07, on: true }, sireHet: { x: .06, y: .48, w: .62, h: .06, on: true }, dam: { x: .06, y: .56, w: .62, h: .07, on: true }, damHet: { x: .06, y: .64, w: .62, h: .06, on: true },
-  birth: { x: .06, y: .73, w: .3, h: .08, on: true }, origin: { x: .38, y: .73, w: .3, h: .08, on: true }, price: { x: .06, y: .83, w: .5, h: .12, on: true }, qr: { x: .72, y: .25, w: .24, h: .45, on: true } };
-const ovlBoxes = () => { const b = cardCfg().overlay?.boxes || {}; return Object.fromEntries(OVL_FIELDS.map(([k]) => [k, { ...OVL_DEF[k], ...(b[k] || {}) }])); };
+  birth: { x: .06, y: .73, w: .3, h: .08, on: true }, origin: { x: .38, y: .73, w: .14, h: .08, on: true }, locality: { x: .54, y: .73, w: .14, h: .08, on: true }, price: { x: .06, y: .83, w: .5, h: .12, on: true }, qr: { x: .72, y: .25, w: .24, h: .45, on: true } };
+const ovlBoxes = () => {
+  const b = { ...(cardCfg().overlay?.boxes || {}) };
+  /* a card placed before 〇 and 産地 had boxes of their own: its one box is split, 〇 on the left and 産地 on the right */
+  if (b.origin && !b.locality) { const o = b.origin; b.origin = { ...o, w: o.w * 0.45 }; b.locality = { ...o, x: o.x + o.w * 0.5, w: o.w * 0.5 }; }
+  return Object.fromEntries(OVL_FIELDS.map(([k]) => [k, { ...OVL_DEF[k], ...(b[k] || {}) }]));
+};
 /* the blank card's photo is only a guide on screen; it is never printed */
 let ovlPreview = null; // { bg: Image, sel: key } while the settings preview draws
 let ovlBg = { src: "", img: null };
@@ -2386,8 +2396,8 @@ function drawOverlay(ctx, sp, W, H) {
           if (l.every(x => ctx.measureText(x).width <= w) && !(l[l.length - 1].endsWith("…") && !t.endsWith("…")) && l.join("").replace(/\s/g, "").length >= t.replace(/\s/g, "").length) { lines = l; break; }
         }
         ctx.font = font(fs);
-        /* the morph sits in the middle of its blank, the own-bred 〇 at the right end (next to the card's 産地) */
-        const align = k === "morph" ? "center" : maru ? "right" : "left", ax = align === "center" ? x + w / 2 : align === "right" ? x + w : x;
+        /* the morph, the own-bred 〇 (over the printed 自家繁殖) and the 産地 (inside its brackets) sit in the middle of their blanks */
+        const align = k === "morph" || k === "locality" || maru ? "center" : "left", ax = align === "center" ? x + w / 2 : align === "right" ? x + w : x;
         ctx.textAlign = align;
         lines.forEach((l, i) => ctx.fillText(l, ax, y + h / 2 + (i - (lines.length - 1) / 2) * fs * 1.12));
         ctx.textAlign = "left";
@@ -2508,11 +2518,11 @@ async function matchBlankCard(file) {
   const cv = document.createElement("canvas"); cv.width = Math.round(iw * sc); cv.height = Math.round(ih * sc); cv.getContext("2d").drawImage(img, 0, 0, cv.width, cv.height);
   const prompt = `これはレオパ（ヒョウモントカゲモドキ）の販売用プライスカードの写真です。店名や「Morph」「Price」などの見出しが印刷済みで、個体ごとの情報を書き込む空欄があります。
 この空欄にプリンターで情報を印刷したいので、次の形のJSONだけで答えてください（説明は不要）。
-{"card":{"x":0〜1,"y":0〜1,"w":0〜1,"h":0〜1},"w_mm":横mm,"h_mm":縦mm,"fields":{"id":箱,"morph":箱,"sex":箱,"sire":箱,"sireHet":箱,"dam":箱,"damHet":箱,"birth":箱,"origin":箱,"price":箱,"qr":箱}}
+{"card":{"x":0〜1,"y":0〜1,"w":0〜1,"h":0〜1},"w_mm":横mm,"h_mm":縦mm,"fields":{"id":箱,"morph":箱,"sex":箱,"sire":箱,"sireHet":箱,"dam":箱,"damHet":箱,"birth":箱,"origin":箱,"locality":箱,"price":箱,"qr":箱}}
 - card: 写真全体に対するカードの位置（割合）。
 - w_mm,h_mm: 名刺サイズなら 91×55（縦向きなら 55×91）。比率から判断。
 - 箱: {"x","y","w","h"} を「カードに対する」割合（0〜1）で。その項目の値を書き込む空欄の範囲（見出しの文字は含めない）。空欄が無い項目は null。
-- id=個体番号, morph=モルフ名（het込み）, sex=雌雄（♂♀）, sire=父親のモルフ, sireHet=父親のhet, dam=母親のモルフ, damHet=母親のhet, birth=生年月日, origin=自家繁殖か産地, price=価格, qr=QRコードを入れる場所。
+- id=個体番号, morph=モルフ名（het込み）, sex=雌雄（♂♀）, sire=父親のモルフ, sireHet=父親のhet, dam=母親のモルフ, damHet=母親のhet, birth=生年月日, origin=「自家繁殖」と印刷された文字そのものの範囲（自家繁殖のとき〇を重ねる）, locality=産地を書く空欄（「自家繁殖・（　）」のような括弧の中）, price=価格, qr=QRコードを入れる場所。
 - 父親・母親の欄が1つだけでhet用の欄が無いときは、sire/dam にその欄を入れて sireHet/damHet は null。`;
   const r = await sample([{ role: "user", content: [{ type: "image", source: { type: "base64", media_type: "image/jpeg", data: cv.toDataURL("image/jpeg", 0.85).split(",")[1] } }, { type: "text", text: prompt }] }], { modelTier: "default" });
   const m = String(r?.text || "").match(/\{[\s\S]*\}/); if (!m) throw new Error("答えを読み取れませんでした");
@@ -4398,7 +4408,7 @@ $("#chat-in").addEventListener("keydown", e => { if (e.key === "Enter" && (e.met
 document.addEventListener("keydown", e => { if (e.key === "Escape" && sheets.length) closeSheet(sheets[sheets.length - 1]); });
 
 /* ---------- app: budget / backup strip, settings, automatic backup, updates ---------- */
-const APP_VERSION = "2026-11-12-2";
+const APP_VERSION = "2026-11-12-3";
 const fmtGB = b => (b / 1e9).toFixed(b >= 1e10 ? 0 : 1) + "GB";
 const fmtTime = t => t ? new Date(t).toLocaleString("ja-JP", { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" }) : "まだありません";
 function setPill(el, { val, ratio, state }) {
@@ -4600,6 +4610,8 @@ function settingsSheet(focus) {
       <section class="setsec" id="sec-breeder"><h3>自分のブリーダー名</h3>
         <div class="field"><label for="st-own">自家繁殖の個体の画面に「〇〇 CB」と表示します（ラベルには印刷しません）</label>
           <div class="idrow"><input id="st-own" value="${esc(S.settings.ownBreeder || "")}" placeholder="例 cdrettili" autocomplete="off"><button class="btn" data-sx="own">保存</button></div></div>
+        <div class="field"><label for="st-ownloc">自家繁殖の産地（名刺の「自家繁殖・（　）」の括弧に印刷）</label>
+          <select id="st-ownloc"><option value="">— 印刷しない</option>${PREFS.map(p => `<option${p === S.settings.ownLocality ? " selected" : ""}>${p}</option>`).join("")}</select></div>
       </section>
       <section class="setsec"><h3>写真の読み取り</h3>
         <label class="toggle"><input type="checkbox" id="st-photoscan" ${pref("photoScan", false) ? "checked" : ""}>カメラ映像ではなく、写真を撮って読み取る</label>
@@ -4640,6 +4652,7 @@ function settingsSheet(focus) {
     draw(s);
     s.body.addEventListener("change", async e => {
       if (e.target.id === "st-photoscan") { setPref("photoScan", e.target.checked); return; }
+      if (e.target.id === "st-ownloc") { const v = e.target.value; try { await saveMeta("settings", { ownLocality: v }); S.settings.ownLocality = v; toast(v ? "自家繁殖の名刺の産地を「" + v + "」にしました" : "自家繁殖の名刺に産地は印刷しません"); } catch (x) { toast(x.message); } return; }
       if (["st-nhour", "st-nlay", "st-nhatch", "st-ntemp"].includes(e.target.id)) {
         const p = notifyPrefs(), v = { ...p, hour: Number($("#st-nhour", s.body)?.value ?? p.hour), lay: !!$("#st-nlay", s.body)?.checked, hatch: !!$("#st-nhatch", s.body)?.checked, temp: !!$("#st-ntemp", s.body)?.checked };
         setPref("notify", v); pushSync(true).then(() => toast("通知の設定を保存しました")).catch(x => toast(x.message)); return;
