@@ -382,7 +382,7 @@
       const pub = (await kvGet(kv)) || {}, have = new Set(pub.photos || []), want = new Set();
       const items = (cat.items || []).slice().sort((a, b) => (a.wno ?? 0) - (b.wno ?? 0)).map(x => {
         const ph = (x.photos || []).slice(0, 4); ph.forEach(id => want.add(id));
-        return { id: "No." + x.wno, wno: x.wno, sex: x.sex || "", morph: x.morph || "", morphEn: x.morphEn || "", het: x.het || "", birthDate: x.birthDate || "", price: x.price ?? null, note: x.note || "", ref: x.ref || "", photos: ph.map(id => "photos/" + id + ".jpg") };
+        return { id: "No." + x.wno, wno: x.wno, sex: x.sex || "", morph: x.morph || "", morphEn: x.morphEn || "", het: x.het || "", birthDate: x.birthDate || "", price: x.price ?? null, note: x.note || "", ref: x.ref || "", country: x.country || "", photos: ph.map(id => "photos/" + id + ".jpg") };
       });
       const tree = [], published = new Set([...have].filter(id => want.has(id)));
       let n = 0; const todo = [...want].filter(id => !have.has(id));

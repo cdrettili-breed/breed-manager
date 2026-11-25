@@ -186,7 +186,7 @@ function render() {
             <div class="line1"><span class="no">No.${esc(x.wno ?? "")}</span><span class="sx ${sx}">${esc(sexText(x.sex))}</span></div>
             <div class="name">${esc(x.morph || "モルフ未記入")}</div>
             ${x.het ? `<div class="het">${esc(x.het)}</div>` : ""}
-            ${born(x) ? `<div class="meta">${esc(born(x))}</div>` : ""}
+            ${born(x) || x.country ? `<div class="meta">${[x.country ? "生産国: " + esc(x.country) : "", esc(born(x))].filter(Boolean).join(" · ")}</div>` : ""}
             ${x.note ? `<div class="memo"><b>備考</b>${esc(x.note)}</div>` : ""}
             <div class="line3"><span class="price${x.price == null ? " ask" : ""}">${esc(yen(x.price))}</span><button class="add" data-add="${esc(x.wno)}" aria-pressed="${inCart}">${inCart ? "✓ カート内" : "カートに入れる"}</button></div>
           </div></article>`;
