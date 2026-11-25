@@ -482,6 +482,12 @@ function normId(raw) {
   return s;
 }
 const ID_RE = /^(P-\d{3,4}|PR\d{2}-\d{3,4}|C\d{2}-\d{3,4}|E\d{2}-\d{4,5}|\d{2}-\d{4,5})$/;
+/* what was typed where an ID goes: a bare number (78, No.78) is the cup number of a gecko on hand, anything else an ID */
+function entryId(raw) {
+  const m = String(raw || "").normalize("NFKC").trim().match(/^(?:no\.?\s*)?(\d{1,4})$/i);
+  if (m) { const g = [...S.geckos.values()].find(x => String(x.packNo || "") === String(+m[1]) && !INACTIVE.has(x.status)); if (g) return g.id; }
+  return normId(raw);
+}
 const collOf = id => /^PR\d/.test(id) ? "pairings" : /^C\d/.test(id) ? "clutches" : /^E\d/.test(id) ? "eggs" : "geckos";
 function toDate(v) {
   if (v == null || v === "") return "";
@@ -560,9 +566,9 @@ function normSex(s) {
   return "不明";
 }
 const GFIELDS = ["name", "sex", "morph", "base", "homo", "het", "morphEn", "birthDate", "incubTemp", "origin", "breeder", "purchasePrice", "price", "wholesalePrice", "sireId", "damId", "clutchId", "eggId", "status", "grade", "breeding", "forSale",
-  "soldPrice", "soldDate", "saleChannel", "saleNotes", "deathDate", "weight", "notes", "packNo",
+  "soldPrice", "soldDate", "saleChannel", "saleNotes", "saleEvent", "deathDate", "weight", "notes", "packNo",
   "consignee", "consignDate", "consignPrice", "consignFee", "consignNote", "consignFrom", "consignSrcId", "locality", "sireMorph", "sireHet", "damMorph", "damHet", "cardText"];
-const GLABEL = { name: "呼び名", sex: "性別", morph: "モルフ", base: "ベースモルフ", homo: "homo", het: "het", breeder: "ブリーダー", morphEn: "英語モルフ名", birthDate: "生年月日", incubTemp: "孵化温度", origin: "由来", purchasePrice: "購入価格", sireId: "父", damId: "母", clutchId: "産卵", eggId: "卵", notes: "メモ", breeding: "用途", forSale: "用途", locality: "産地", sireMorph: "父のモルフ", sireHet: "父のhet", damMorph: "母のモルフ", damHet: "母のhet" };
+const GLABEL = { name: "呼び名", sex: "性別", morph: "モルフ", base: "ベースモルフ", homo: "homo", het: "het", breeder: "ブリーダー", morphEn: "英語モルフ名", birthDate: "生年月日", incubTemp: "孵化温度", origin: "由来", purchasePrice: "購入価格", sireId: "父", damId: "母", clutchId: "産卵", eggId: "卵", notes: "メモ", breeding: "用途", forSale: "用途", locality: "産地", sireMorph: "父のモルフ", sireHet: "父のhet", damMorph: "母のモルフ", damHet: "母のhet", saleEvent: "販売イベント", soldDate: "販売日", saleChannel: "販売の区分", saleNotes: "販売メモ" };
 function cleanGecko(x) {
   const o = {};
   for (const k of GFIELDS) {
@@ -809,7 +815,9 @@ async function getRec(coll, rawId) {
   const c = CACHE[coll]().get(id); if (c) return c;
   if (coll === "geckos") { const a = (S.archive || []).find(g => g.id === id); if (a) return a; }
   if (!S.db) return null;
-  const s = await S.db.doc(path).get(); return s.exists ? s.data() : null;
+  const s = await S.db.doc(path).get(); if (s.exists) return s.data();
+  /* a gecko whose ID was changed is still found by its old ID (labels printed before) */
+  const to = coll === "geckos" ? (S.settings.idAlias || {})[id] : ""; return to && to !== id ? getRec(coll, to) : null;
 }
 const getAny = id => getRec(collOf(normId(id)), id);
 const remember = (coll, doc) => { S.local.set(coll + "/" + doc.id, { doc, ts: Date.now() }); if (coll === "geckos" && S.archive) S.archive = S.archive.map(g => g.id === doc.id ? doc : g); };
@@ -866,6 +874,7 @@ function describeChange(cur, c, p) {
   if ("purchasePrice" in c && c.purchasePrice !== (cur.purchasePrice ?? null)) parts.push("購入価格 " + yen(c.purchasePrice));
   if ("price" in c && c.price !== (cur.price ?? null)) parts.push("販売価格 " + yen(c.price));
   if ("wholesalePrice" in c && c.wholesalePrice !== (cur.wholesalePrice ?? null)) parts.push("卸価格 " + yen(c.wholesalePrice));
+  if ("soldPrice" in c && cur.status === "販売済" && c.soldPrice !== (cur.soldPrice ?? null)) parts.push("販売額 " + yen(cur.soldPrice) + "→" + yen(c.soldPrice));
   const other = Object.keys(c).filter(k => GLABEL[k] && !["breeding", "forSale", "purchasePrice"].includes(k) && String(c[k] ?? "") !== String(cur[k] ?? ""));
   if (other.length) parts.push(other.map(k => GLABEL[k]).join("・") + "を変更");
   return parts.join(" / ");
@@ -889,10 +898,71 @@ async function updateGecko(rawId, changes, extraLog) {
     return putRec("geckos", cur.id, p, text || null);
   });
 }
-async function sellGecko({ id, price, date, channel, notes }) {
+async function sellGecko({ id, price, date, channel, notes, event }) {
   const g = await getRec("geckos", id); if (!g) throw new Error(normId(id) + " という個体は見つかりません");
   if (INACTIVE.has(g.status)) throw new Error(g.id + " はすでに「" + g.status + "」です");
-  return updateGecko(g.id, { status: "販売済", soldPrice: price, soldDate: date || today(), saleChannel: channel || "小売り", saleNotes: notes || "" });
+  const r = await updateGecko(g.id, { status: "販売済", soldPrice: price, soldDate: date || today(), saleChannel: channel || "小売り", saleNotes: notes || "", saleEvent: String(event || "").trim() });
+  if (S.sales) S.sales = S.sales.filter(x => x.id !== r.id).concat(r);
+  return r;
+}
+/* a sale already recorded can be corrected: price, date, kind, event, memo */
+async function editSale(id, { price, date, channel, notes, event }) {
+  const g = await getRec("geckos", id); if (!g) throw new Error(normId(id) + " という個体は見つかりません");
+  if (g.status !== "販売済") throw new Error(g.id + " は販売済ではありません");
+  if (toNum(price) == null) throw new Error("販売額を入れてください");
+  const r = await updateGecko(g.id, { soldPrice: price, soldDate: date || g.soldDate, saleChannel: channel || g.saleChannel || "小売り", saleNotes: notes ?? "", saleEvent: String(event || "").trim() });
+  if (S.sales) S.sales = S.sales.map(x => x.id === r.id ? r : x);
+  return r;
+}
+/* ---- changing a gecko's ID ----
+   The record moves to the new ID and every place that points at it follows (children's parents, pairings, layings,
+   eggs, print queue, lists, packing). The old ID is remembered as an alias, so labels already printed still scan. */
+const idAlias = () => S.settings.idAlias || {};
+async function peekId(key, make) {
+  const snap = await S.db.doc("meta/counters").get(); let n = snap.exists ? (Number(snap.data()[key]) || 0) : 0, id;
+  do { n++; id = make(n); } while ((await S.db.doc("geckos/" + id).get()).exists);
+  return id;
+}
+const saleIdKey = g => { const y = yy(g.birthDate || today()); return ["Y" + y, n => y + "-" + pad(n, 4)]; };
+const breedIdKey = () => ["P", n => "P-" + pad(n, 3)];
+const isSaleId = id => /^\d{2}-\d{4,5}$/.test(id);
+async function renameGecko(rawId, rawNew, how) {
+  needDb();
+  const cur = await getRec("geckos", rawId); if (!cur) throw new Error(normId(rawId) + " という個体は見つかりません");
+  let nid = how === "sale" ? await allocId(...saleIdKey(cur), "geckos") : how === "breed" ? await allocId(...breedIdKey(), "geckos") : normId(rawNew);
+  if (!nid) throw new Error("新しいIDを入れてください");
+  if (nid === cur.id) throw new Error("今と同じIDです");
+  if (!/^[0-9A-Z][0-9A-Z.\-_]{0,19}$/.test(nid) || collOf(nid) !== "geckos") throw new Error("「" + nid + "」はIDに使えません（英数字とハイフン、PR・C・Eで始まらないもの）");
+  if ((await S.db.doc("geckos/" + nid).get()).exists || (await S.db.doc("trash/" + nid).get()).exists) throw new Error(nid + " はすでに使われています");
+  const old = cur.id;
+  await serial(async () => {
+    const doc = { ...cur, id: nid, prevIds: [...(cur.prevIds || []), old], updatedAt: nowTs(), log: [...(cur.log || []), L("IDを変更 " + old + " → " + nid)].slice(-200) };
+    await S.db.doc("geckos/" + nid).set(doc); remember("geckos", doc);
+    await S.db.doc("geckos/" + old).delete(); S.local.delete("geckos/" + old); S.geckos.delete(old);
+    if (S.archive) S.archive = S.archive.filter(g => g.id !== old).concat(doc.active ? [] : [doc]);
+    if (S.sales) S.sales = S.sales.map(g => g.id === old ? doc : g);
+    /* whatever points at the old ID */
+    const fix = async (coll, field) => { for (const d of (await S.db.collection(coll).where(field, "==", old).get()).docs) { await S.db.doc(coll + "/" + d.id).update({ [field]: nid }); S.local.delete(coll + "/" + d.id); } };
+    for (const f of ["sireId", "damId"]) { await fix("geckos", f); await fix("pairings", f); await fix("clutches", f); await fix("eggs", f); }
+    await fix("eggs", "offspringId");
+    for (const d of (await S.db.collection("clutches").where("offspringIds", "array-contains", old).get()).docs) await S.db.doc("clutches/" + d.id).update({ offspringIds: (d.data().offspringIds || []).map(x => x === old ? nid : x) });
+    for (const t of ["sticker", "card", "cup"]) { const k = qKey(old, t), q = S.queue.get(k); if (!q) continue; await S.db.doc("printQueue/" + k).delete(); S.queue.delete(k); const nq = { ...q, refId: nid }; await S.db.doc("printQueue/" + qKey(nid, t)).set(nq); S.queue.set(qKey(nid, t), nq); }
+    if (packItems().some(x => x.id === old)) { const items = packItems().map(x => x.id === old ? { ...x, id: nid } : x); await saveMeta("packing", { items }); S.packing = { ...S.packing, items }; }
+    const alias = { ...idAlias() }; delete alias[nid]; for (const k of Object.keys(alias)) if (alias[k] === old) alias[k] = nid; alias[old] = nid;
+    S.settings.idAlias = alias; await saveMeta("settings", { idAlias: alias });
+  });
+  for (const M of Object.values(LISTS)) if (listIds(M).has(old)) await saveList(M, listItems(M).map(x => x.id === old ? { ...x, id: nid } : x)).catch(() => {});
+  renderBadge(); schedule();
+  return nid;
+}
+function renameForm(g, then) {
+  const why = isSaleId(g.id) ? "" : isSale(g) ? `<br><b>販売用になっているので、販売用ID（${yy(g.birthDate || today())}-0000）に振り直せます。</b>` : "";
+  openForm({ title: g.id + " のIDを変更", submit: "IDを変更",
+    intro: `<div class="infobox">IDを変えると、子の親・ペアリング・産卵・印刷待ち・卸/販売リストも新しいIDに付け替えます。印刷済みのラベル（古いID）を読み取っても、この個体が開きます。${why}</div>`,
+    fields: [{ k: "how", label: "新しいID", type: "seg", options: [["sale", "販売用IDを自動で"], ["breed", "繁殖用IDを自動で"], ["manual", "自分で入力"]], def: isSale(g) && !isSaleId(g.id) ? "sale" : "manual" },
+      { k: "id", label: "新しいID（自分で入力のとき）", ph: "例 26-0123", showIf: v => v.how === "manual" }],
+    values: { how: isSale(g) && !isSaleId(g.id) ? "sale" : "manual", id: "" },
+    onSubmit: async v => { const nid = await renameGecko(g.id, v.id, v.how); then?.(nid); return "IDを " + g.id + " → " + nid + " に変更しました"; } });
 }
 async function markDead({ id, date, notes }) {
   const g = await getRec("geckos", id); if (!g) throw new Error(normId(id) + " という個体は見つかりません");
@@ -1473,7 +1543,7 @@ async function loadSales() {
 }
 function matchQ(g, q) {
   const toks = fold(q).split(/\s+/).filter(Boolean); if (!toks.length) return true;
-  const hay = fold([g.id, g.name, g.morph, g.base, g.homo, g.het, g.breeder, g.morphEn, g.notes, g.sireId, g.damId, g.clutchId, g.eggId, g.origin, g.status, g.sex, g.grade ? "評価" + g.grade : ""].join(" "));
+  const hay = fold([g.id, ...(g.prevIds || []), g.packNo ? "no." + g.packNo + " カップ" + g.packNo : "", g.saleEvent, g.name, g.morph, g.base, g.homo, g.het, g.breeder, g.morphEn, g.notes, g.sireId, g.damId, g.clutchId, g.eggId, g.origin, g.status, g.sex, g.grade ? "評価" + g.grade : ""].join(" "));
   return toks.every(t => hay.includes(t) || hay.includes(fold(normId(t))));
 }
 function filterGeckos(list, o) {
@@ -1949,10 +2019,71 @@ function sellForm(g) {
       { k: "price", label: "価格（円）", type: "number", ph: "タップで選ぶか入力", chips: priceChips(g) },
       { k: "date", label: "販売日", type: "date" },
       { k: "channel", label: "区分", type: "seg", options: CHANNELS, def: g.status === "委託中" ? "委託" : "小売り" },
-      { k: "notes", label: "メモ", type: "textarea", ph: "任意（イベント名・お客様など）" }],
-    values: g.status === "委託中" ? { date: today(), price: g.consignPrice ?? g.price ?? "", notes: "委託先: " + (g.consignee || "") } : { date: today(), price: g.price ?? "" },
-    onSubmit: async v => { if (toNum(v.price) == null) throw new Error("価格を選ぶか入力してください"); await sellGecko({ id: g.id, ...v }); return g.id + " を販売済にしました"; }
+      eventField(),
+      { k: "notes", label: "メモ", type: "textarea", ph: "任意（お客様など）" }],
+    values: g.status === "委託中" ? { date: today(), price: g.consignPrice ?? g.price ?? "", notes: "委託先: " + (g.consignee || ""), event: S.settings.curEvent || "" } : { date: today(), price: g.price ?? "", event: S.settings.curEvent || "" },
+    onSubmit: async v => {
+      if (toNum(v.price) == null) throw new Error("価格を選ぶか入力してください");
+      await sellGecko({ id: g.id, ...v }); await rememberEvent(v.event);
+      return g.id + " を販売済にしました" + (v.event ? "（" + v.event.trim() + "）" : "");
+    }
   });
+}
+/* sales are grouped by event (a show, a market day…): the last one typed is offered first, so a day at an event is one tap each */
+const recentEvents = () => {
+  const by = new Map(); for (const x of S.sales || []) if (x.saleEvent) { const d = x.soldDate || ""; if (!by.has(x.saleEvent) || by.get(x.saleEvent) < d) by.set(x.saleEvent, d); }
+  return [...by.entries()].sort((a, b) => b[1].localeCompare(a[1])).map(e => e[0]);
+};
+const eventField = () => ({ k: "event", label: "イベント（任意・イベントごとに売上を集計）", ph: "例 ジャパンレプタイルズショー 2026冬", chips: [...new Set([S.settings.curEvent, ...recentEvents()].filter(Boolean))].slice(0, 6) });
+async function rememberEvent(e) { const v = String(e || "").trim(); if (v === (S.settings.curEvent || "")) return; S.settings.curEvent = v; try { await saveMeta("settings", { curEvent: v }); } catch {} }
+function editSaleForm(g, after) {
+  if (!S.sales && S.db) loadSales().then(s => { S.sales = s; }).catch(() => {});
+  openForm({ title: g.id + " の販売内容", submit: "保存",
+    intro: `<div class="infobox">${sxHTML(g.sex)} <b class="mono">${esc(g.id)}</b> ${esc(mz(g.morph) || "")}</div>`,
+    fields: [{ k: "price", label: "販売額（円）", type: "number" }, { k: "date", label: "販売日", type: "date" },
+      { k: "channel", label: "区分", type: "seg", options: CHANNELS, def: "小売り" }, eventField(), { k: "notes", label: "メモ", type: "textarea", ph: "任意" }],
+    values: { price: g.soldPrice ?? "", date: g.soldDate || today(), channel: g.saleChannel || "小売り", event: g.saleEvent || "", notes: g.saleNotes || "" },
+    onSubmit: async v => { await editSale(g.id, v); after?.(); return g.id + " の販売内容を直しました"; } });
+}
+/* ---------- sold geckos: the list (newest first), each sale editable, and the takings per event ---------- */
+function soldSheet() {
+  const st = { tab: "list", ev: null, q: "" };
+  const draw = async s => {
+    if (!S.sales) { s.body.innerHTML = `<div class="empty">読み込み中…</div>`; S.sales = await loadSales().catch(() => []); }
+    const all = S.sales.slice().sort((a, b) => String(b.soldDate || "").localeCompare(String(a.soldDate || "")) || b.id.localeCompare(a.id));
+    const evName = x => x.saleEvent || "", tabs = `<div class="qtabs" role="group" aria-label="表示"><button data-sd="list" aria-pressed="${st.tab === "list"}">販売済みの個体</button><button data-sd="events" aria-pressed="${st.tab === "events"}">イベント別の売上</button></div>`;
+    const sum = l => l.reduce((a, g) => a + (g.soldPrice || 0), 0);
+    const sell = `<div class="idrow" style="margin:10px 0"><input id="sd-id" placeholder="カップの番号かIDで販売（例 78）" autocomplete="off" aria-label="カップの番号かID"><button class="btn" data-sd="sell">販売</button><button class="btn" data-sd="scan" aria-label="QRで販売">${QR_ICON}</button></div>`;
+    if (st.tab === "events") {
+      const groups = new Map(); for (const g of all) { const k = evName(g); (groups.get(k) || groups.set(k, []).get(k)).push(g); }
+      const rows = [...groups.entries()].map(([k, l]) => ({ k, l, first: l[l.length - 1].soldDate || "", last: l[0].soldDate || "" })).sort((a, b) => (a.k ? 0 : 1) - (b.k ? 0 : 1) || b.last.localeCompare(a.last));
+      s.body.innerHTML = tabs + sell + (rows.length ? `<div class="list">${rows.map(r => `<button class="row" data-ev="${esc(r.k)}" style="grid-template-columns:minmax(0,1fr) auto"><span class="rmain"><span class="rmorph">${esc(r.k || "イベントなし")}</span><span class="rsub">${esc(r.first === r.last ? r.last : r.first + " 〜 " + r.last)} · ${r.l.length}頭${["業販", "委託"].some(c => r.l.some(g => g.saleChannel === c)) ? "（" + CHANNELS.map(c => [c, r.l.filter(g => (g.saleChannel || "小売り") === c).length]).filter(x => x[1]).map(x => x[0] + x[1]).join("・") + "）" : ""}</span></span><span class="rprice mono" style="font-size:17px;font-weight:700">${yen(sum(r.l))}</span></button>`).join("")}</div>
+        <p class="note">合計 ${all.length}頭 ${yen(sum(all))}。販売のときに「イベント」を入れると、ここにまとまります。あとから個体ごとに直せます。</p>` : `<div class="empty">まだ販売の記録はありません。</div>`);
+      return;
+    }
+    const q = fold(st.q.trim());
+    const l = all.filter(g => (st.ev == null || evName(g) === st.ev) && (!q || fold([g.id, g.morph, g.het, g.saleEvent, g.saleNotes, g.soldDate, g.packNo ? "no." + g.packNo : ""].join(" ")).includes(q)));
+    s.body.innerHTML = tabs + sell + `
+      <input id="sd-q" type="search" value="${esc(st.q)}" placeholder="モルフ・ID・イベントで探す" autocomplete="off" style="display:block;width:100%;margin-bottom:8px;min-height:40px;padding:6px 12px;font-size:16px;border:1px solid var(--line);border-radius:10px;background:var(--card, #fff);color:inherit">
+      ${st.ev != null ? `<div class="infobox" style="margin-bottom:8px">${esc(st.ev || "イベントなし")} の ${l.length}頭 · <b class="mono">${yen(sum(l))}</b> <button class="btn sm" data-sd="allev">すべて表示</button></div>` : `<p class="note" style="margin:0 0 8px">${l.length}頭 · 合計 <b class="mono">${yen(sum(l))}</b>　販売額を押すと直せます。</p>`}
+      ${l.length ? `<div class="list">${l.map(g => `<div class="row" style="grid-template-columns:auto minmax(0,1fr) auto"><button class="idlink rid" data-open="${esc(g.id)}">${esc(g.id)}</button><span class="rmain"><span class="rmorph">${sxHTML(g.sex)} ${esc(mz(g.morph) || "モルフ未入力")}</span><span class="rsub">${esc(g.soldDate || "")} · ${esc(g.saleChannel || "小売り")}${g.saleEvent ? " · " + esc(g.saleEvent) : ""}${g.packNo ? " · カップNo." + esc(g.packNo) : ""}</span></span><button class="btn sm mono" data-sedit="${esc(g.id)}" aria-label="${esc(g.id)} の販売額を直す">${yen(g.soldPrice)}</button></div>`).join("")}</div>` : `<div class="empty">該当する個体はありません。</div>`}`;
+  };
+  openSheet({ title: "販売済み・売上", refresh: s => { const a = document.activeElement; if (a && a.tagName === "INPUT" && s.el.contains(a)) return; draw(s); }, render: s => {
+    draw(s);
+    s.body.oninput = e => { if (e.target.id === "sd-q") { st.q = e.target.value; clearTimeout(st.t); st.t = setTimeout(() => { draw(s).then(() => { const i = $("#sd-q", s.body); if (i) { i.focus(); i.setSelectionRange(i.value.length, i.value.length); } }); }, 250); } };
+    s.body.onclick = async e => {
+      const t = e.target;
+      const ed = t.closest("[data-sedit]"); if (ed) { const g = await getRec("geckos", ed.dataset.sedit); if (g) editSaleForm(g, () => draw(s)); return; }
+      const ev = t.closest("[data-ev]"); if (ev) { st.ev = ev.dataset.ev; st.tab = "list"; draw(s); return; }
+      const b = t.closest("[data-sd]"); if (!b) return;
+      const a = b.dataset.sd;
+      if (a === "list" || a === "events") { st.tab = a; draw(s); return; }
+      if (a === "allev") { st.ev = null; draw(s); return; }
+      const sellId = async id => { const g = await getRec("geckos", id); if (!g) throw new Error(id + " は見つかりません"); if (INACTIVE.has(g.status)) throw new Error(g.id + " はすでに「" + g.status + "」です"); sellForm(g); };
+      if (a === "scan") return startScan(async id => { if (collOf(id) !== "geckos") throw new Error("個体のQRではありません（" + id + "）"); await sellId(id); });
+      if (a === "sell") { const v = $("#sd-id", s.body).value; if (!v.trim()) return; try { await sellId(entryId(v)); } catch (x) { toast(x.message); } }
+    };
+  } });
 }
 /* ---------- consignment (委託) ----------
    A gecko placed with a shop or another breeder is "委託中" with who, when, at what price and fee. What the consignee
@@ -2074,12 +2205,13 @@ function addMenu() {
     s.body.innerHTML = `<div class="cards">
       <button class="card" data-pick="gecko"><b>個体を登録</b><div class="meta">購入した個体など。IDを自動発行</div></button>
       <button class="card" data-pick="packing"><b>パッキングモード</b><div class="meta">QRを読んで番号と価格を決め、名刺とカップラベルを印刷待ちへ</div></button>
+      <button class="card" data-pick="sold"><b>販売済み・売上</b><div class="meta">販売済みの個体の一覧と販売額の修正、イベントごとの売上。カップの番号で販売</div></button>
       <button class="card" data-pick="wholesale"><b>卸モード</b><div class="meta">QRを読んで写真と卸価格を決め、卸リスト（カタログ）へ</div></button>
       <button class="card" data-pick="sales"><b>販売モード</b><div class="meta">QRを読んで写真と販売価格を決め、一般のお客様向けの販売リストへ</div></button>
       <button class="card" data-pick="morphs"><b>モルフの登録</b><div class="meta">ベース（遺伝子）・コンボ・ラインの追加、変更、削除</div></button>
       <button class="card" data-pick="settings"><b>設定</b><div class="meta">ClaudeのAPIキーと予算、Dropboxバックアップ、データの書き出し</div></button></div>`;
     s.body.addEventListener("click", e => { const b = e.target.closest("[data-pick]"); if (!b) return; closeSheet(s);
-      ({ gecko: () => newGeckoForm(), pair: () => pairingFlow(), lay: () => layPicker(), hatch: () => hatchPicker(), packing: () => packingSheet(), wholesale: () => wholesaleSheet(), sales: () => salesSheet(), morphs: () => morphSheet(), settings: () => settingsSheet() })[b.dataset.pick](); });
+      ({ gecko: () => newGeckoForm(), pair: () => pairingFlow(), lay: () => layPicker(), hatch: () => hatchPicker(), packing: () => packingSheet(), sold: () => soldSheet(), wholesale: () => wholesaleSheet(), sales: () => salesSheet(), morphs: () => morphSheet(), settings: () => settingsSheet() })[b.dataset.pick](); });
   } });
 }
 
@@ -3380,6 +3512,8 @@ async function packAdd({ id, no, price }) {
   if (!n || n < 1) throw new Error("番号を決めてください");
   if (p == null) throw new Error("価格を選ぶか入力してください");
   const clash = packItems().find(x => x.no === n && x.id !== g.id); if (clash) throw new Error("No." + n + " はすでに " + clash.id + " に使っています");
+  /* a cup number belongs to one gecko on hand at a time: one left from an earlier packing gives it up */
+  for (const o of [...S.geckos.values()]) if (o.id !== g.id && String(o.packNo || "") === String(n)) await putRec("geckos", o.id, { packNo: "" }, "カップ No." + n + " を " + g.id + " に").catch(() => {});
   await updateGecko(g.id, { price: p, packNo: String(n) }, "パッキング No." + n);
   await queueAdd([g.id], "card");
   await queueAdd([g.id], "cup", { packNo: n });
@@ -3392,8 +3526,9 @@ async function packRemove(id) {
   await saveMeta("packing", { items }); S.packing = { ...S.packing, items };
   await queueRemove(["card:" + id, "cup:" + id].filter(k => S.queue.has(k)));
 }
+/* ending a packing starts the next one from No.1; each gecko keeps its cup number (found by it, printed on its card)
+   until the number is given to another gecko */
 async function packEnd() {
-  for (const it of packItems()) await putRec("geckos", it.id, { packNo: "" }, null).catch(() => {});
   await saveMeta("packing", { items: [] }); S.packing = { items: [] };
 }
 function packingSheet() {
@@ -3421,7 +3556,7 @@ function packingSheet() {
       ${items.length ? `<div class="list">${items.map(x => { const gg = S.geckos.get(x.id); return `<div class="row r3"><span class="pkno">${esc(x.no)}</span><span class="rmain"><span class="rmorph">${esc(gg?.morph || x.morph || "")}</span><span class="rsub"><button class="idlink" data-open="${esc(x.id)}">${esc(x.id)}</button> ${yen(x.price)}</span></span><button class="btn sm" data-pkdel="${esc(x.id)}">外す</button></div>`; }).join("")}</div>`
         : `<div class="empty">まだありません。</div>`}
       <div class="botacts"><button class="btn abtn" data-pk="queue">印刷待ち（名刺${qn("card")}・カップ${qn("cup")}）</button><button class="btn abtn danger" data-pk="end">${armEnd ? "もう一度で終了" : "パッキング終了"}</button></div>
-      <p class="note">終了すると番号がリセットされます。価格と印刷待ちはそのまま残ります。</p>`;
+      <p class="note">終了すると次のパッキングは No.1 から始まります。カップの番号は個体に残り、番号で探したり（販売済み・売上 → 番号で販売）名刺に印刷したりできます。同じ番号を別の個体に付けると、前の個体からは外れます。</p>`;
   };
   const refresh = s => {
     const a = document.activeElement; if (a && a.tagName === "INPUT" && s.el.contains(a)) return; /* don't redraw under the user's typing */
@@ -3557,7 +3692,7 @@ function listSheet(M) {
       const wp = t.closest("[data-wp]"); if (wp) { $("#wq-price", s.body).value = wp.dataset.wp; st.price = wp.dataset.wp; return; }
       const ed = t.closest("[data-wedit]"); if (ed) { st.id = ed.dataset.wedit; st.price = ""; st.note = null; await draw(s); s.body.scrollTop = 0; return; }
       const del = t.closest("[data-wdel]"); if (del) { try { await listRemove(M, del.dataset.wdel); draw(s); } catch (x) { toast(x.message); } return; }
-      const en = t.closest("[data-enter]"); if (en) { const v = $("#ide-" + k, s.body).value; if (v.trim()) { st.id = normId(v); st.price = ""; st.note = null; draw(s); } return; }
+      const en = t.closest("[data-enter]"); if (en) { const v = $("#ide-" + k, s.body).value; if (v.trim()) { st.id = entryId(v); st.price = ""; st.note = null; draw(s); } return; }
       const b = t.closest("[data-wq]"); if (!b) return;
       const a = b.dataset.wq;
       if (a === "scan") return startScan(id => { if (collOf(id) !== "geckos") throw new Error("個体のQRではありません（" + id + "）"); st.id = id; st.price = ""; st.note = null; draw(s); });
@@ -3626,6 +3761,8 @@ function openGecko(id) {
   const draw = async s => {
     const g = await getRec("geckos", id).catch(() => null);
     if (!g) { s.body.innerHTML = notFound(id); return; }
+    /* opened by an old ID, or the ID was just changed */
+    if (g.id !== id) { id = g.id; const h = s.el.querySelector(".sheet-head h2"); if (h) h.textContent = "個体 " + id; }
     const br = isBreeding(g), sale = isSale(g), done = INACTIVE.has(g.status);
     const kids = br ? [...S.geckos.values()].filter(k => k.sireId === g.id || k.damId === g.id) : [];
     const pairs = [...S.pairings.values()].filter(p => p.damId === g.id || p.sireId === g.id).sort((a, b) => b.date.localeCompare(a.date));
@@ -3640,7 +3777,7 @@ function openGecko(id) {
     s.body.innerHTML = `
       ${lay ? `<div class="laybox"><div class="laytxt"><b>産卵中</b> ♂${idBtn(lay.sireId)} · 次 ${esc(md(lay.next))} <span class="days ${dueCls(lay.daysLeft)}">${dueText(lay.daysLeft)}</span><br><span class="muted small">${pairCodeHTML(lay.pairing)} ${idBtn(lay.pairing.id)}${lay.last ? " · 前回 " + esc(md(lay.last)) + " · " + lay.count + "回" : " · 初回待ち"}</span></div>
         <div class="laybtns"><button class="btn abtn primary" data-q="lay">産卵を記録</button><button class="btn abtn" data-q="endlay">産卵終了</button></div></div>` : ""}
-      <div class="hero">${sxHTML(g.sex)}<span class="midid">${esc(g.id)}</span>${pill(g.status)}${gradeHTML(g.grade)}<span class="muted small" style="margin-left:auto">${esc(useLabel(g))}</span></div>
+      <div class="hero">${sxHTML(g.sex)}<span class="midid">${esc(g.id)}</span>${g.packNo ? `<span class="pill s-grow" title="カップの番号">カップ No.${esc(g.packNo)}</span>` : ""}${pill(g.status)}${gradeHTML(g.grade)}<span class="muted small" style="margin-left:auto">${esc(useLabel(g))}</span></div>
       ${top}
       <button class="btn block" data-ask style="margin:8px 0">💬 この個体についてチャットで聞く</button>
       ${done ? "" : g.status === "委託中" ? `<div class="botacts" style="margin:0 0 8px"><button class="btn abtn" data-q="cinfo">委託情報（QR）</button><button class="btn abtn" data-q="cback">委託から戻す</button></div>` : `<button class="btn block" data-q="consign" style="margin:0 0 8px">委託に出す</button>`}
@@ -3662,7 +3799,7 @@ function openGecko(id) {
         ${done ? "" : `<dt>小売価格</dt><dd>${priceInput("price", g.price, "小売価格（円）")}${g.packNo ? ` <span class="muted small">パッキング No.${esc(g.packNo)}</span>` : ""}${listIds(LISTS.rt).has(g.id) ? ` <span class="pill s-sale">販売 No.${esc(listNo(LISTS.rt, g.id))} 掲載中</span>` : ""}</dd>
         <dt>卸価格</dt><dd>${priceInput("wholesalePrice", g.wholesalePrice, "卸価格（円）")}${catalogIds().has(g.id) ? ` <span class="pill s-sale">卸 No.${esc(wnoOf(g.id))} 掲載中</span>` : ""}</dd>`}
         <dt>体重</dt><dd class="num">${wh[0] ? esc(wh[0].g) + "g <span class='muted small'>" + esc(md(wh[0].date)) + "</span>" : "—"}</dd>
-        ${g.status === "販売済" ? `<dt>販売</dt><dd class="num">${yen(g.soldPrice)} · ${esc(g.soldDate || "")} · ${esc(g.saleChannel || "小売り")}${g.saleNotes ? "<br>" + esc(g.saleNotes) : ""}</dd>` : ""}
+        ${g.status === "販売済" ? `<dt>販売</dt><dd class="num">${yen(g.soldPrice)} · ${esc(g.soldDate || "")} · ${esc(g.saleChannel || "小売り")}${g.saleEvent ? " · " + esc(g.saleEvent) : ""}${g.saleNotes ? "<br>" + esc(g.saleNotes) : ""}<br><button class="btn sm" data-q="editsale" style="margin-top:4px">販売額・内容を直す</button></dd>` : ""}
         ${g.status === "死亡" ? `<dt>死亡</dt><dd class="num">${esc(g.deathDate || "")}</dd>` : ""}
         ${g.notes ? `<dt>メモ</dt><dd style="white-space:pre-wrap">${esc(g.notes)}</dd>` : ""}
       </dl>
@@ -3672,6 +3809,7 @@ function openGecko(id) {
       ${wh.length > 1 ? `<h3 class="sec-h">体重の記録</h3><div class="hist">${wh.map(w => `<div><span>${esc(w.date)}</span><span class="mono">${esc(w.g)}g</span></div>`).join("")}</div>` : ""}
       ${logHTML(g)}
       <div class="botacts">${g.status !== "死亡" ? `<button class="btn abtn danger" data-q="dead">死亡</button>` : `<span></span>`}<button class="btn abtn" data-q="edit">編集</button></div>
+      <button class="btn block" data-q="rename" style="margin-top:8px">IDを変更${isSale(g) && !isSaleId(g.id) ? "（販売用IDに振り直す）" : ""}</button>
       <button class="btn block danger" data-q="delete" style="margin-top:8px">この個体を削除（間違えて登録したとき）</button>`;
     /* the prices are typed right here; each is saved when the field is left */
     s.body.onchange = async e => {
@@ -3685,7 +3823,21 @@ function openGecko(id) {
       if (e.target.closest("[data-ask]")) return askAbout(g.id);
       const ph = e.target.closest("[data-photo]"); if (ph) return photoSheet(g.id, ph.dataset.photo);
       const us = e.target.closest("[data-guse]");
-      if (us) { if (us.dataset.guse === useOf(g)) return; try { await updateGecko(g.id, useFlags(us.dataset.guse)); toast(g.id + " を" + USE_OPTS.find(o => o[0] === us.dataset.guse)[1] + "にしました"); draw(s); } catch (x) { toast(x.message); } return; }
+      if (us) {
+        if (us.dataset.guse === useOf(g)) return;
+        try {
+          await updateGecko(g.id, useFlags(us.dataset.guse)); toast(g.id + " を" + USE_OPTS.find(o => o[0] === us.dataset.guse)[1] + "にしました");
+          /* 繁殖用 → 販売用: the breeding ID (P-012) can become the next sale ID (26-0123) right away */
+          if (us.dataset.guse === "sale" && !isSaleId(g.id) && !done) {
+            const [k, mk] = saleIdKey(g), next = await peekId(k, mk);
+            if (confirm(g.id + " を販売用IDに振り直しますか？\n\n" + g.id + " → " + next + "（予定）\n\n子の親・ペアリング・印刷待ちなども新しいIDに付け替えます。印刷済みのラベルは古いIDのままでも読み取れます。")) {
+              const nid = await renameGecko(g.id, "", "sale"); toast("IDを " + g.id + " → " + nid + " に変更しました");
+            }
+          }
+          draw(s);
+        } catch (x) { toast(x.message); draw(s); }
+        return;
+      }
       const gr = e.target.closest("[data-grade]");
       if (gr) { const v = g.grade === gr.dataset.grade ? "" : gr.dataset.grade; try { await updateGecko(g.id, { grade: v }); draw(s); } catch (x) { toast(x.message); } return; }
       const b = e.target.closest("[data-q]"); if (!b) return;
@@ -3698,6 +3850,8 @@ function openGecko(id) {
       if (q === "consign") return consignForm(g);
       if (q === "cinfo") return consignSheet(g.id);
       if (q === "cback") { if (!confirm(g.id + " を委託から戻しますか？（販売中に戻ります）")) return; try { await unconsignGecko(g.id); toast(g.id + " を委託から戻しました"); draw(s); } catch (x) { toast(x.message); } return; }
+      if (q === "rename") return renameForm(g, () => draw(s));
+      if (q === "editsale") return editSaleForm(g);
       if (q === "edit") editGeckoForm(g); else if (q === "sell") sellForm(g); else if (q === "dead") deathForm(g);
       else if (q === "photo") pickPhoto(g.id, "lib");
       else if (q === "photo-cam") pickPhoto(g.id, "cam");
@@ -4414,7 +4568,7 @@ $("#chat-in").addEventListener("keydown", e => { if (e.key === "Enter" && (e.met
 document.addEventListener("keydown", e => { if (e.key === "Escape" && sheets.length) closeSheet(sheets[sheets.length - 1]); });
 
 /* ---------- app: budget / backup strip, settings, automatic backup, updates ---------- */
-const APP_VERSION = "2026-11-26-1";
+const APP_VERSION = "2026-11-26-2";
 const fmtGB = b => (b / 1e9).toFixed(b >= 1e10 ? 0 : 1) + "GB";
 const fmtTime = t => t ? new Date(t).toLocaleString("ja-JP", { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" }) : "まだありません";
 function setPill(el, { val, ratio, state }) {
