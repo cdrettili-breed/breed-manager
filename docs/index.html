@@ -3469,7 +3469,8 @@ const LISTS = {
 const geneLine = g => g.het || "";
 const listItems = M => (S[M.st].items || []);
 const listIds = M => new Set(listItems(M).map(x => x.id));
-const listEntry = (M, g, at) => ({ id: g.id, sex: g.sex || "", morph: g.morph || "", morphEn: morphEnOf(g), het: geneLine(g), birthDate: g.birthDate || "", price: g[M.price] ?? null, photos: (g.photos || []).map(p => p.id).slice(0, 6), at: at || nowTs() });
+/* the 備考 belongs to the listing (not the gecko), so it is carried over whenever the entry is rebuilt */
+const listEntry = (M, g, at, note) => ({ id: g.id, sex: g.sex || "", morph: g.morph || "", morphEn: morphEnOf(g), het: geneLine(g), birthDate: g.birthDate || "", price: g[M.price] ?? null, photos: (g.photos || []).map(p => p.id).slice(0, 6), note: note || "", at: at || nowTs() });
 /* list numbers are simple and always 1..N over what is listed now, in the order it was added */
 const listNo = (M, id) => listItems(M).find(x => x.id === id)?.wno ?? null;
 async function saveList(M, list) {
@@ -3480,27 +3481,27 @@ async function saveList(M, list) {
   if (snap.exists) await ref.update(data); else await ref.set(data);
   S[M.st] = { ...S[M.st], ...data }; schedule();
 }
-async function listUpsert(M, g) {
+async function listUpsert(M, g, note) {
   const old = listItems(M).find(x => x.id === g.id);
-  await saveList(M, listItems(M).filter(x => x.id !== g.id).concat(listEntry(M, g, old?.at)));
+  await saveList(M, listItems(M).filter(x => x.id !== g.id).concat(listEntry(M, g, old?.at, note ?? old?.note)));
 }
 /* a gecko's change (photos, morph) is copied into every list it is on */
 async function listsUpsert(g) { for (const M of Object.values(LISTS)) if (listIds(M).has(g.id)) await listUpsert(M, g).catch(e => console.warn("list", e)); }
 async function listsDrop(id) { for (const M of Object.values(LISTS)) if (listIds(M).has(id)) await saveList(M, listItems(M).filter(x => x.id !== id)).catch(() => {}); }
-async function listAdd(M, id, price) {
+async function listAdd(M, id, price, note) {
   needDb();
   const g = await getRec("geckos", id); if (!g) throw new Error(normId(id) + " という個体は見つかりません");
   if (INACTIVE.has(g.status)) throw new Error(g.id + " はすでに「" + g.status + "」です");
   const p = toNum(price); if (p == null) throw new Error(M.priceLabel.replace("（円）", "").replace(/・円）/, "）") + "を選ぶか入力してください");
   const fresh = listIds(M).has(g.id);
   const g2 = await updateGecko(g.id, { [M.price]: p }, fresh ? "" : M.title + "に追加");
-  await listUpsert(M, g2);
+  await listUpsert(M, g2, note == null ? undefined : String(note).trim());
   return { ...g2, wno: listNo(M, g2.id) };
 }
 async function listRemove(M, id) { await saveList(M, listItems(M).filter(x => x.id !== id)); await logTo("geckos", id, M.title + "から外す"); }
 async function listRefresh(M) {
   const out = [];
-  for (const x of listItems(M)) { const g = await getRec("geckos", x.id).catch(() => null); if (g && !INACTIVE.has(g.status)) out.push(listEntry(M, g, x.at)); }
+  for (const x of listItems(M)) { const g = await getRec("geckos", x.id).catch(() => null); if (g && !INACTIVE.has(g.status)) out.push(listEntry(M, g, x.at, x.note)); }
   await saveList(M, out); return out.length;
 }
 /* the wholesale names used elsewhere */
@@ -3515,13 +3516,14 @@ function wholesaleChips(g) {
 const wholesaleSheet = () => listSheet(LISTS.wh);
 const salesSheet = () => listSheet(LISTS.rt);
 function listSheet(M) {
-  const st = { id: "", price: "" }, k = M.key;
+  const st = { id: "", price: "", note: null }, k = M.key;
   const draw = async s => {
     const g = st.id ? await getRec("geckos", st.id).catch(() => null) : null;
     const items = listItems(M).slice().sort((a, b) => (a.wno ?? 0) - (b.wno ?? 0));
     const pub = await M.pub().state();
     const inList = g && listIds(M).has(g.id);
     if (g && st.price === "" && g[M.price] != null) st.price = String(g[M.price]);
+    if (g && st.note == null) st.note = listItems(M).find(x => x.id === g.id)?.note || "";
     s.body.innerHTML = `
       <p class="note" style="margin:0 0 10px">個体のQRを読む → 写真と${M.name === "卸" ? "卸価格" : "販売価格"}を決める → ${M.title}へ。${M.title}はお客様用ページとしてPC・スマホで見られる形にまとまります。${M.key === "rt" ? "価格は個体の販売価格（名刺と同じ小売りの価格）を使います。" : ""}</p>
       ${!g ? `<button class="btn primary block big" data-wq="scan">${QR_ICON}個体のQRを読み取る</button><div style="margin-top:8px">${idEntry(k, "またはIDを入力（例 26-0012）")}</div>${st.id ? `<div class="infobox warn" style="margin-top:8px">${esc(st.id)} は見つかりません</div>` : ""}`
@@ -3531,11 +3533,12 @@ function listSheet(M) {
           <div class="form">
             <div class="field"><label for="wq-price">${esc(M.priceLabel)}</label><input id="wq-price" inputmode="decimal" value="${esc(st.price)}" placeholder="タップで選ぶか入力" autocomplete="off">
               <div class="chips wrap">${M.chips(g).map(([v, l]) => `<button type="button" class="chip" data-wp="${esc(v)}">${esc(l)}</button>`).join("")}</div></div>
+            <div class="field"><label for="wq-note">備考（お客様用ページに表示・任意）</label><textarea id="wq-note" rows="2" placeholder="例 拒食なし・サイズ大きめ">${esc(st.note || "")}</textarea></div>
             <p class="form-err" role="alert" hidden></p>
             <button class="btn primary block big" data-wq="add">${inList ? M.title + "を更新" : M.title + "に追加"}</button>
           </div>`}
       <h3 class="sec-h">${esc(M.title)} <span class="count">${items.length}頭</span></h3>
-      ${items.length ? `<div class="list">${items.map(x => `<div class="row" style="grid-template-columns:auto auto minmax(0,1fr) auto"><span class="pkno">${esc(x.wno ?? "")}</span><span class="thumb">${x.photos && x.photos[0] ? `<img src="_blob/${esc(x.photos[0])}" alt="" loading="lazy">` : ""}</span><span class="rmain"><span class="rmorph">${esc(mz(x.morph))}</span><span class="rsub"><button class="idlink" data-open="${esc(x.id)}">${esc(x.id)}</button> ${esc(x.birthDate || "")} · ${yen(x.price)}</span></span><button class="btn sm" data-wdel="${esc(x.id)}">外す</button></div>`).join("")}</div>
+      ${items.length ? `<div class="list">${items.map(x => `<div class="row" style="grid-template-columns:auto auto minmax(0,1fr) auto"><span class="pkno">${esc(x.wno ?? "")}</span><span class="thumb">${x.photos && x.photos[0] ? `<img src="_blob/${esc(x.photos[0])}" alt="" loading="lazy">` : ""}</span><span class="rmain"><span class="rmorph">${esc(mz(x.morph))}</span><span class="rsub"><button class="idlink" data-open="${esc(x.id)}">${esc(x.id)}</button> ${esc(x.birthDate || "")} · ${yen(x.price)}</span>${x.note ? `<span class="rsub">備考: ${esc(x.note)}</span>` : ""}</span><span style="display:flex;gap:6px"><button class="btn sm" data-wedit="${esc(x.id)}">編集</button><button class="btn sm" data-wdel="${esc(x.id)}">外す</button></span></div>`).join("")}</div>
         <p class="note">番号は、いま掲載している個体に1から順に振られます。外すと番号は詰めて振り直されます。</p>`
         : `<div class="empty">まだありません。</div>`}
       <div class="botacts"><button class="btn abtn" data-wq="view">ページを見る</button><button class="btn abtn" data-wq="refresh">最新の情報に更新</button></div>
@@ -3543,20 +3546,22 @@ function listSheet(M) {
       <p class="note">公開ページ: <span class="mono" style="user-select:all">${esc(M.pub().url)}</span> <button class="idlink" data-wq="copy" style="font-family:inherit">コピー</button><br>前回の公開: ${pub.at ? esc(fmtTime(pub.at)) + "（" + pub.count + "頭）" : "まだありません"}。公開してから1〜2分でページに反映されます。</p>
       <p class="note">「最新の情報に更新」で、モルフや写真、価格の変更を反映し、販売済み・死亡の個体をリストから外します。</p>`;
   };
-  const refresh = s => { const a = document.activeElement; if (a && a.tagName === "INPUT" && s.el.contains(a)) return; const p = $("#wq-price", s.body); if (p) st.price = p.value; draw(s); };
+  const keep = s => { const p = $("#wq-price", s.body); if (p) st.price = p.value; const n = $("#wq-note", s.body); if (n) st.note = n.value; };
+  const refresh = s => { const a = document.activeElement; if (a && (a.tagName === "INPUT" || a.tagName === "TEXTAREA") && s.el.contains(a)) return; keep(s); draw(s); };
   openSheet({ title: M.sheet, refresh, render: s => {
     draw(s);
     s.body.onclick = async e => {
       const t = e.target;
       const ph = t.closest("[data-photo]"); if (ph) return photoSheet(ph.dataset.pg, ph.dataset.photo);
-      const q = t.closest("[data-q]"); if (q && st.id) { const p = $("#wq-price", s.body); if (p) st.price = p.value; return pickPhoto(st.id, q.dataset.q === "photo-cam" ? "cam" : "lib", () => draw(s)); }
+      const q = t.closest("[data-q]"); if (q && st.id) { keep(s); return pickPhoto(st.id, q.dataset.q === "photo-cam" ? "cam" : "lib", () => draw(s)); }
       const wp = t.closest("[data-wp]"); if (wp) { $("#wq-price", s.body).value = wp.dataset.wp; st.price = wp.dataset.wp; return; }
+      const ed = t.closest("[data-wedit]"); if (ed) { st.id = ed.dataset.wedit; st.price = ""; st.note = null; await draw(s); s.body.scrollTop = 0; return; }
       const del = t.closest("[data-wdel]"); if (del) { try { await listRemove(M, del.dataset.wdel); draw(s); } catch (x) { toast(x.message); } return; }
-      const en = t.closest("[data-enter]"); if (en) { const v = $("#ide-" + k, s.body).value; if (v.trim()) { st.id = normId(v); st.price = ""; draw(s); } return; }
+      const en = t.closest("[data-enter]"); if (en) { const v = $("#ide-" + k, s.body).value; if (v.trim()) { st.id = normId(v); st.price = ""; st.note = null; draw(s); } return; }
       const b = t.closest("[data-wq]"); if (!b) return;
       const a = b.dataset.wq;
-      if (a === "scan") return startScan(id => { if (collOf(id) !== "geckos") throw new Error("個体のQRではありません（" + id + "）"); st.id = id; st.price = ""; draw(s); });
-      if (a === "clear") { st.id = ""; st.price = ""; draw(s); return; }
+      if (a === "scan") return startScan(id => { if (collOf(id) !== "geckos") throw new Error("個体のQRではありません（" + id + "）"); st.id = id; st.price = ""; st.note = null; draw(s); });
+      if (a === "clear") { st.id = ""; st.price = ""; st.note = null; draw(s); return; }
       if (a === "view") return listPreview(M);
       if (a === "copy") { try { await navigator.clipboard.writeText(M.pub().url); toast("URLをコピーしました"); } catch { toast(M.pub().url); } return; }
       if (a === "publish") {
@@ -3567,8 +3572,8 @@ function listSheet(M) {
       }
       if (a === "refresh") { b.disabled = true; try { const n = await listRefresh(M); toast(n + "頭の情報を更新しました"); draw(s); } catch (x) { toast(x.message); b.disabled = false; } return; }
       if (a === "add") {
-        const p = $("#wq-price", s.body); st.price = p.value; const err = $(".form-err", s.body); err.hidden = true; b.disabled = true;
-        try { const g = await listAdd(M, st.id, st.price); toast(M.name + " No." + g.wno + "（" + g.id + "）で" + M.title + "に入れました"); st.id = ""; st.price = ""; draw(s); }
+        keep(s); const err = $(".form-err", s.body); err.hidden = true; b.disabled = true;
+        try { const g = await listAdd(M, st.id, st.price, st.note); toast(M.name + " No." + g.wno + "（" + g.id + "）で" + M.title + "に入れました"); st.id = ""; st.price = ""; st.note = null; draw(s); }
         catch (x) { err.textContent = x.message; err.hidden = false; b.disabled = false; }
       }
     };
@@ -3583,6 +3588,7 @@ function catalogHTML(cat, M = LISTS.wh) {
       ${x.photos && x.photos.length > 1 ? `<div class="cat-more">${x.photos.slice(1, 4).map(p => `<img src="_blob/${esc(p)}" alt="" loading="lazy">`).join("")}</div>` : ""}
       <div class="cat-body"><div class="cat-top"><span class="cat-id">No.${esc(x.wno ?? "")}</span><span class="cat-sex">${esc(x.sex === "♂" ? "♂ Male" : x.sex === "♀" ? "♀ Female" : "")}</span></div>
         <div class="cat-morph">${esc(x.morph || "—")}</div>${x.morphEn && x.morphEn !== x.morph ? `<div class="cat-en">${esc(x.morphEn)}</div>` : ""}${x.het ? `<div class="cat-en">${esc(x.het)}</div>` : ""}
+        ${x.note ? `<div class="cat-en" style="white-space:pre-wrap">備考: ${esc(x.note)}</div>` : ""}
         <div class="cat-foot"><span>${x.birthDate ? esc(x.birthDate.replace(/-/g, ".")) + " 生まれ" : ""}</span><b>${x.price != null ? yen(x.price) : "価格はお問い合わせ"}</b></div></div></article>`).join("")}</div>`
       : `<div class="empty">現在掲載している個体はありません。</div>`}`;
 }
@@ -4408,7 +4414,7 @@ $("#chat-in").addEventListener("keydown", e => { if (e.key === "Enter" && (e.met
 document.addEventListener("keydown", e => { if (e.key === "Escape" && sheets.length) closeSheet(sheets[sheets.length - 1]); });
 
 /* ---------- app: budget / backup strip, settings, automatic backup, updates ---------- */
-const APP_VERSION = "2026-11-12-3";
+const APP_VERSION = "2026-11-25-1";
 const fmtGB = b => (b / 1e9).toFixed(b >= 1e10 ? 0 : 1) + "GB";
 const fmtTime = t => t ? new Date(t).toLocaleString("ja-JP", { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" }) : "まだありません";
 function setPill(el, { val, ratio, state }) {

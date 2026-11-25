@@ -65,6 +65,34 @@ footer{color:var(--muted);font-size:12px;text-align:center;padding-block:0 32px}
 .viewer img{max-width:100%;max-height:78vh;border-radius:10px;display:block}
 .viewer .bar{display:flex;gap:10px;align-items:center;color:#fff;font:600 14px var(--f-mono)}
 .viewer button{background:rgba(255,255,255,.14);color:#fff;border:1px solid rgba(255,255,255,.3);border-radius:999px;min-width:44px;height:44px;padding:0 14px;font-size:16px;cursor:pointer}
+.note{font-size:12.5px;color:var(--muted);white-space:pre-wrap;overflow-wrap:anywhere;margin-top:4px}
+.add{margin-top:10px;border:1px solid var(--accent);background:var(--surface);color:var(--accent);border-radius:10px;padding:8px 10px;font-weight:700;cursor:pointer;min-height:40px}
+.add[aria-pressed="true"]{background:var(--accent);color:#fff}
+.card.incart{border-color:var(--accent);box-shadow:0 0 0 1px var(--accent)}
+body.hascart main .wrap{padding-bottom:110px}
+.cartbar{position:fixed;left:0;right:0;bottom:0;z-index:5;background:var(--surface);border-top:1px solid var(--line);box-shadow:0 -4px 16px rgba(0,0,0,.08);padding:10px max(16px,env(safe-area-inset-right,0px)) calc(10px + env(safe-area-inset-bottom,0px)) max(16px,env(safe-area-inset-left,0px))}
+.cartbar .wrap{display:flex;align-items:center;justify-content:space-between;gap:12px}
+.cartbar b{font-family:var(--f-mono);font-size:17px}
+.cartbar .sum{display:flex;flex-direction:column;line-height:1.3;min-width:0}
+.cartbar .ask{font-size:11.5px;color:var(--muted)}
+.cartbar .btn{white-space:nowrap;flex:none}
+.btn{border:1px solid var(--line);background:var(--surface);border-radius:10px;padding:10px 16px;font-weight:700;cursor:pointer;min-height:44px}
+.btn.primary{background:var(--accent);border-color:var(--accent);color:#fff}
+.cart{position:fixed;inset:0;z-index:8;background:var(--scrim);display:flex;align-items:flex-end;justify-content:center}
+.cart .panel{background:var(--bg);width:100%;max-width:560px;max-height:92vh;overflow:auto;border-radius:16px 16px 0 0;padding:18px max(16px,env(safe-area-inset-right,0px)) calc(18px + env(safe-area-inset-bottom,0px)) max(16px,env(safe-area-inset-left,0px));display:flex;flex-direction:column;gap:12px}
+.cart h2{margin:0;font-family:var(--f-display);font-size:20px;display:flex;justify-content:space-between;align-items:center}
+.cart .line{display:grid;grid-template-columns:auto minmax(0,1fr) auto auto;gap:10px;align-items:center;padding:8px 0;border-bottom:1px solid var(--line)}
+.cart .line .no{font:700 14px var(--f-mono)}
+.cart .line .m{overflow-wrap:anywhere;font-size:14px}
+.cart .line .p{font:600 15px var(--f-mono);white-space:nowrap}
+.cart .x{border:0;background:none;color:var(--muted);font-size:20px;min-width:36px;min-height:36px;cursor:pointer}
+.cart .total{display:flex;justify-content:space-between;font-weight:700;font-size:16px}
+.cart .total b{font-family:var(--f-mono);font-size:20px}
+.cart label{font-size:13px;color:var(--muted);display:flex;flex-direction:column;gap:4px}
+.cart input,.cart textarea{border:1px solid var(--line);border-radius:10px;padding:9px 12px;background:var(--surface);font-size:16px;font-family:inherit;color:var(--ink)}
+.cart .acts{display:grid;grid-template-columns:1fr 1fr;gap:8px}
+.cart .hint{font-size:12.5px;color:var(--muted);margin:0}
+.toast{position:fixed;left:50%;bottom:calc(90px + env(safe-area-inset-bottom,0px));transform:translateX(-50%);background:var(--ink);color:var(--bg);padding:9px 16px;border-radius:999px;font-size:14px;z-index:20;white-space:nowrap}
 @media (prefers-reduced-motion:no-preference){.card{transition:transform .15s ease}.card:hover{transform:translateY(-2px)}}
 </style>
 
@@ -90,6 +118,9 @@ footer{color:var(--muted);font-size:12px;text-align:center;padding-block:0 32px}
 </div></main>
 <footer class="gut">掲載内容は更新時点のものです。在庫状況はお問い合わせください。</footer>
 <div class="viewer" id="viewer" hidden role="dialog" aria-modal="true" aria-label="写真"></div>
+<div class="cartbar" id="cartbar" hidden><div class="wrap"><span class="sum"><span>カート <b id="cb-n">0</b>頭 · <b id="cb-sum"></b></span><span class="ask" id="cb-ask" hidden>価格お問い合わせの個体を含みます</span></span><button class="btn primary" data-c="open">カートを見る</button></div></div>
+<div class="cart" id="cart" hidden role="dialog" aria-modal="true" aria-label="カート"></div>
+<div class="toast" id="toast" hidden></div>
 
 <script>
 "use strict";
@@ -118,11 +149,13 @@ function render() {
     : !items.length ? `<div class="empty"><b>条件に合う個体はいません</b>検索や性別の絞り込みを変えてみてください。</div>`
     : `<div class="grid">${items.map(x => {
         const ph = x.photos || [];
-        return `<article class="card">
+        const inCart = cart.includes(x.wno);
+        return `<article class="card${inCart ? " incart" : ""}">
           ${ph.length ? `<button class="photo count-badge" data-ph="${esc(x.wno)}" aria-label="No.${esc(x.wno)} の写真を見る"><img src="${esc(ph[0])}" alt="No.${esc(x.wno)} ${esc(x.morph)}" loading="lazy">${ph.length > 1 ? `<span>${ph.length}枚</span>` : ""}</button>` : `<div class="photo none">写真準備中</div>`}
           <div class="body"><div class="top"><span class="id">No.${esc(x.wno ?? "")}</span><span class="sex">${esc(sexText(x.sex))}</span></div>
-            <div class="morph">${esc(x.morph || "—")}</div>${x.morphEn && x.morphEn !== x.morph ? `<div class="en">${esc(x.morphEn)}</div>` : ""}${x.het ? `<div class="en">${esc(x.het)}</div>` : ""}
-            <div class="foot"><span>${x.birthDate ? esc(x.birthDate.replace(/-/g, ".")) + " 生まれ" + (ageText(x.birthDate) ? "（" + esc(ageText(x.birthDate)) + "）" : "") : ""}</span><span class="price${x.price == null ? " ask" : ""}">${esc(yen(x.price))}</span></div></div></article>`;
+            <div class="morph">${esc(x.morph || "—")}</div>${x.morphEn && x.morphEn !== x.morph ? `<div class="en">${esc(x.morphEn)}</div>` : ""}${x.het ? `<div class="en">${esc(x.het)}</div>` : ""}${x.note ? `<div class="note">備考: ${esc(x.note)}</div>` : ""}
+            <div class="foot"><span>${x.birthDate ? esc(x.birthDate.replace(/-/g, ".")) + " 生まれ" + (ageText(x.birthDate) ? "（" + esc(ageText(x.birthDate)) + "）" : "") : ""}</span><span class="price${x.price == null ? " ask" : ""}">${esc(yen(x.price))}</span></div>
+            <button class="add" data-add="${esc(x.wno)}" aria-pressed="${inCart}">${inCart ? "✓ カートに入っています" : "カートに入れる"}</button></div></article>`;
       }).join("")}</div>`;
 }
 function renderSexes() {
@@ -130,6 +163,46 @@ function renderSexes() {
   const opts = [["", "すべて"], ["♂", "♂ オス"], ["♀", "♀ メス"], ["?", "未判定"]].filter(([k]) => !k || has(k));
   $("#sexes").innerHTML = opts.length > 2 ? opts.map(([k, l]) => `<button class="chip" data-sex="${k}" aria-pressed="${sexF === k}">${l}</button>`).join("") : "";
 }
+/* ---- cart: kept in this browser only; the order goes out as text the buyer copies or sends by LINE ----
+   it remembers each gecko by list number and morph, so a renumbered or sold gecko simply drops out */
+const CART_KEY = "bm-cart-" + location.pathname;
+let cart = [], who = "";
+try { const c = JSON.parse(localStorage.getItem(CART_KEY) || "{}"); cart = c.items || []; who = c.who || ""; } catch {}
+const cartKeyOf = x => x.wno + "|" + x.morph;
+let cartKeys = [];
+try { cartKeys = JSON.parse(localStorage.getItem(CART_KEY) || "{}").keys || []; } catch {}
+function saveCart() { try { localStorage.setItem(CART_KEY, JSON.stringify({ items: cart, keys: cartItems().map(cartKeyOf), who })); } catch {} }
+const cartItems = () => cart.map(n => data.items.find(x => x.wno === n)).filter(Boolean);
+const cartSum = () => cartItems().reduce((s, x) => s + (x.price ?? 0), 0);
+const cartAsk = () => cartItems().some(x => x.price == null);
+function toast(t) { const el = $("#toast"); el.textContent = t; el.hidden = false; clearTimeout(toast.t); toast.t = setTimeout(() => { el.hidden = true; }, 2200); }
+function renderBar() {
+  const n = cartItems().length;
+  $("#cartbar").hidden = !n; document.body.classList.toggle("hascart", !!n);
+  $("#cb-n").textContent = n; $("#cb-sum").textContent = yen(cartSum()); $("#cb-ask").hidden = !cartAsk();
+}
+function orderText() {
+  const it = cartItems().slice().sort((a, b) => a.wno - b.wno), note = ($("#c-note")?.value || "").trim();
+  return [`【${data.title || "卸リスト"} 注文】`, who ? "お名前: " + who : "", "",
+    ...it.map(x => [`No.${x.wno}`, x.sex, x.morph, x.het].filter(Boolean).join(" ") + "  " + yen(x.price)), "",
+    `合計 ${it.length}頭 ${yen(cartSum())}${cartAsk() ? "（価格お問い合わせの個体を除く）" : ""}`, note ? "\n備考: " + note : ""].join("\n").replace(/\n{3,}/g, "\n\n").trim();
+}
+function showCart() {
+  const it = cartItems().slice().sort((a, b) => a.wno - b.wno), c = $("#cart");
+  if (!it.length) { c.hidden = true; renderBar(); return; }
+  const keepNote = $("#c-note")?.value || "";
+  c.innerHTML = `<div class="panel"><h2>カート（${it.length}頭）<button class="x" data-c="close" aria-label="閉じる">×</button></h2>
+    <div>${it.map(x => `<div class="line"><span class="no">No.${esc(x.wno)}</span><span class="m">${esc(x.sex || "")} ${esc(x.morph || "—")}${x.het ? `<br><span style="color:var(--muted);font-size:12.5px">${esc(x.het)}</span>` : ""}</span><span class="p">${esc(yen(x.price))}</span><button class="x" data-rm="${esc(x.wno)}" aria-label="No.${esc(x.wno)} を外す">×</button></div>`).join("")}</div>
+    <div class="total"><span>合計 ${it.length}頭</span><b>${esc(yen(cartSum()))}</b></div>${cartAsk() ? `<p class="hint">価格お問い合わせの個体は合計に入っていません。</p>` : ""}
+    <label>お名前・店名<input id="c-who" value="${esc(who)}" autocomplete="organization" placeholder="例 〇〇レプタイルズ"></label>
+    <label>備考（任意）<textarea id="c-note" rows="2" placeholder="例 発送希望日・支払い方法など">${esc(keepNote)}</textarea></label>
+    <div class="acts"><button class="btn" data-c="copy">注文内容をコピー</button><button class="btn primary" data-c="line">LINEで送る</button></div>
+    <p class="hint">注文内容を文章にして、LINEやメッセージで送れます。在庫は確認のうえお返事します。</p>
+    <button class="btn" data-c="clear">カートを空にする</button></div>`;
+  c.hidden = false;
+}
+function setCart(next) { cart = next; saveCart(); render(); renderBar(); if (!$("#cart").hidden) showCart(); }
+document.addEventListener("input", e => { if (e.target.id === "c-who") { who = e.target.value; saveCart(); } });
 let vi = { list: [], i: 0 };
 function showViewer() {
   const v = $("#viewer"), src = vi.list[vi.i];
@@ -137,13 +210,27 @@ function showViewer() {
   v.hidden = false;
 }
 document.addEventListener("click", e => {
+  const ad = e.target.closest("[data-add]");
+  if (ad) { const n = Number(ad.dataset.add); const on = cart.includes(n); setCart(on ? cart.filter(x => x !== n) : cart.concat(n)); if (!on) toast("No." + n + " をカートに入れました"); return; }
+  const rm = e.target.closest("[data-rm]"); if (rm) { setCart(cart.filter(x => x !== Number(rm.dataset.rm))); return; }
+  const cb = e.target.closest("[data-c]");
+  if (cb) {
+    const k = cb.dataset.c;
+    if (k === "open") showCart();
+    else if (k === "close") $("#cart").hidden = true;
+    else if (k === "clear") { if (confirm("カートを空にしますか？")) { setCart([]); $("#cart").hidden = true; } }
+    else if (k === "copy") navigator.clipboard.writeText(orderText()).then(() => toast("注文内容をコピーしました"), () => { window.prompt("この文章をコピーしてください", orderText()); });
+    else if (k === "line") location.href = "https://line.me/R/share?text=" + encodeURIComponent(orderText());
+    return;
+  }
+  if (e.target.id === "cart") { $("#cart").hidden = true; return; }
   const s = e.target.closest("[data-sex]"); if (s) { sexF = s.dataset.sex; renderSexes(); render(); return; }
   const p = e.target.closest("[data-ph]"); if (p) { const x = data.items.find(i => String(i.wno) === p.dataset.ph); vi = { list: x.photos || [], i: 0 }; showViewer(); return; }
   const v = e.target.closest("[data-v]");
   if (v) { const k = v.dataset.v; if (k === "close") $("#viewer").hidden = true; else { vi.i = (vi.i + (k === "next" ? 1 : -1) + vi.list.length) % vi.list.length; showViewer(); } return; }
   if (e.target.id === "viewer") $("#viewer").hidden = true;
 });
-document.addEventListener("keydown", e => { if (e.key === "Escape") $("#viewer").hidden = true; });
+document.addEventListener("keydown", e => { if (e.key === "Escape") { $("#viewer").hidden = true; $("#cart").hidden = true; } });
 $("#q").addEventListener("input", render);
 $("#sort").addEventListener("change", render);
 fetch("catalog.json", { cache: "no-store" }).then(r => r.ok ? r.json() : Promise.reject(r.status)).then(d => {
@@ -151,7 +238,9 @@ fetch("catalog.json", { cache: "no-store" }).then(r => r.ok ? r.json() : Promise
   document.title = (data.title || "卸リスト");
   $("#title").textContent = data.title || "卸リスト";
   $("#sub").innerHTML = `<b>${data.items.length}</b>頭掲載 · ${esc(String(data.updatedAt || "").slice(0, 10).replace(/-/g, "/"))} 更新`;
-  renderSexes(); render();
+  /* only what is still listed as the same gecko stays in the cart */
+  cart = cart.filter((n, i) => { const x = data.items.find(y => y.wno === n); return x && (!cartKeys.length || cartKeys.includes(cartKeyOf(x))); }); saveCart();
+  renderSexes(); render(); renderBar();
 }).catch(() => { $("#sub").textContent = "リストを読み込めませんでした。時間をおいて開き直してください。"; render(); });
 </script>
 </body>
