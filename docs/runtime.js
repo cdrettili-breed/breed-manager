@@ -361,7 +361,7 @@
   const GH = { owner: "cdrettili-breed", repo: "breed-manager", branch: "main" };
   const SITE = "https://cdrettili-breed.github.io/breed-manager/";
   async function gh(path, opts = {}) {
-    const st = await settings.get(); if (!st.ghToken) throw err("no_gh", "GitHubの鍵が未設定です。設定の「卸カタログの公開」で入れてください");
+    const st = await settings.get(); if (!st.ghToken) throw err("no_gh", "GitHubの鍵が未設定です。設定の「お客様用ページの公開（GitHub）」で入れてください");
     const r = await fetch("https://api.github.com" + path, { ...opts, headers: { Authorization: "Bearer " + st.ghToken, Accept: "application/vnd.github+json", "X-GitHub-Api-Version": "2022-11-28", ...(opts.body ? { "Content-Type": "application/json" } : {}) } });
     if (!r.ok) {
       if (r.status === 401) throw err("gh_auth", "GitHubの鍵が正しくないか、期限が切れています");
