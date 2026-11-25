@@ -662,6 +662,13 @@ function enTerms() {
   enCache = { l: S.lines, g: GENES, c: COMBOS, p: POLYS, terms };
   return terms;
 }
+/* English → Japanese (for names written in English, e.g. a card's morph): the shortest Japanese name for each term */
+function toJapanese(text) {
+  const ja = new Map(); for (const [jp, en] of enTerms()) if (!ja.has(en.toLowerCase()) || ja.get(en.toLowerCase()).length > jp.length) ja.set(en.toLowerCase(), jp);
+  let s = String(text || "").normalize("NFKC");
+  for (const en of [...ja.keys()].sort((a, b) => b.length - a.length)) s = s.replace(new RegExp("(^|[^A-Za-z])" + en.replace(/[.*+?^${}()|[\]\\]/g, "\\$&") + "(?![A-Za-z])", "gi"), (m, p) => p + ja.get(en));
+  return s.replace(/\s+/g, " ").trim();
+}
 const morphEnOf = g => (g.morphEn || "").trim() || toEnglish(g.morph);
 /* morph names on screens and labels follow the chosen notation (設定 → モルフ名の表記); the data keeps what was entered */
 const morphLang = () => S.settings.morphLang === "en" ? "en" : "ja";
@@ -3605,7 +3612,10 @@ const geneLine = g => g.het || "";
 const listItems = M => (S[M.st].items || []);
 const listIds = M => new Set(listItems(M).map(x => x.id));
 /* the 備考 belongs to the listing (not the gecko), so it is carried over whenever the entry is rebuilt */
-const listEntry = (M, g, at, note) => ({ id: g.id, sex: g.sex || "", morph: g.morph || "", morphEn: morphEnOf(g), het: geneLine(g), birthDate: g.birthDate || "", price: g[M.price] ?? null, photos: (g.photos || []).map(p => p.id).slice(0, 6), note: note || "", at: at || nowTs() });
+/* the name buyers see is the one the business card prints (when it was rewritten for the card, het included), in Japanese;
+   otherwise the registered morph and het */
+const listName = g => { const t = g.cardText && typeof g.cardText.morph === "string" ? g.cardText.morph.trim() : ""; return t ? { morph: toJapanese(t), het: "" } : { morph: g.morph || "", het: geneLine(g) }; };
+const listEntry = (M, g, at, note) => ({ id: g.id, sex: g.sex || "", ...listName(g), morphEn: morphEnOf(g), birthDate: g.birthDate || "", price: g[M.price] ?? null, photos: (g.photos || []).map(p => p.id).slice(0, 6), note: note || "", at: at || nowTs() });
 /* list numbers are simple and always 1..N over what is listed now, in the order it was added */
 const listNo = (M, id) => listItems(M).find(x => x.id === id)?.wno ?? null;
 async function saveList(M, list) {
@@ -3701,7 +3711,8 @@ function listSheet(M) {
       if (a === "copy") { try { await navigator.clipboard.writeText(M.pub().url); toast("URLをコピーしました"); } catch { toast(M.pub().url); } return; }
       if (a === "publish") {
         b.disabled = true; const label = b.textContent; b.textContent = "公開しています…";
-        try { const r = await M.pub().publish(S[M.st], (n, all) => { b.textContent = `写真を送っています ${n}/${all}`; }); toast(r.count + "頭の" + M.title + "を公開しました。1〜2分で反映されます"); draw(s); }
+        /* the page always gets the latest names, prices and notes (sold geckos drop out) */
+        try { await listRefresh(M); const r = await M.pub().publish(S[M.st], (n, all) => { b.textContent = `写真を送っています ${n}/${all}`; }); toast(r.count + "頭の" + M.title + "を公開しました。1〜2分で反映されます"); draw(s); }
         catch (x) { toast(x.message); b.disabled = false; b.textContent = label; if (x.code === "no_gh" || x.code === "gh_auth") settingsSheet("catalog"); }
         return;
       }
@@ -3722,8 +3733,8 @@ function catalogHTML(cat, M = LISTS.wh) {
       <div class="cat-photo">${x.photos && x.photos[0] ? `<img src="_blob/${esc(x.photos[0])}" alt="${esc(x.id)} の写真" loading="lazy">` : `<span>写真なし</span>`}</div>
       ${x.photos && x.photos.length > 1 ? `<div class="cat-more">${x.photos.slice(1, 4).map(p => `<img src="_blob/${esc(p)}" alt="" loading="lazy">`).join("")}</div>` : ""}
       <div class="cat-body"><div class="cat-top"><span class="cat-id">No.${esc(x.wno ?? "")}</span><span class="cat-sex">${esc(x.sex === "♂" ? "♂ Male" : x.sex === "♀" ? "♀ Female" : "")}</span></div>
-        <div class="cat-morph">${esc(x.morph || "—")}</div>${x.morphEn && x.morphEn !== x.morph ? `<div class="cat-en">${esc(x.morphEn)}</div>` : ""}${x.het ? `<div class="cat-en">${esc(x.het)}</div>` : ""}
-        ${x.note ? `<div class="cat-en" style="white-space:pre-wrap">備考: ${esc(x.note)}</div>` : ""}
+        <div class="cat-morph">${esc(x.morph || "—")}</div>${M.key === "rt" && x.morphEn && x.morphEn !== x.morph ? `<div class="cat-en">${esc(x.morphEn)}</div>` : ""}${x.het ? `<div class="cat-en">${esc(x.het)}</div>` : ""}
+        ${x.note ? `<div class="cat-en" style="white-space:pre-wrap;background:var(--soft, #FFF4D6);color:var(--ink);border-radius:8px;padding:4px 8px;margin-top:4px"><b>備考</b> ${esc(x.note)}</div>` : ""}
         <div class="cat-foot"><span>${x.birthDate ? esc(x.birthDate.replace(/-/g, ".")) + " 生まれ" : ""}</span><b>${x.price != null ? yen(x.price) : "価格はお問い合わせ"}</b></div></div></article>`).join("")}</div>`
       : `<div class="empty">現在掲載している個体はありません。</div>`}`;
 }
@@ -4568,7 +4579,7 @@ $("#chat-in").addEventListener("keydown", e => { if (e.key === "Enter" && (e.met
 document.addEventListener("keydown", e => { if (e.key === "Escape" && sheets.length) closeSheet(sheets[sheets.length - 1]); });
 
 /* ---------- app: budget / backup strip, settings, automatic backup, updates ---------- */
-const APP_VERSION = "2026-11-26-2";
+const APP_VERSION = "2026-11-26-3";
 const fmtGB = b => (b / 1e9).toFixed(b >= 1e10 ? 0 : 1) + "GB";
 const fmtTime = t => t ? new Date(t).toLocaleString("ja-JP", { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" }) : "まだありません";
 function setPill(el, { val, ratio, state }) {

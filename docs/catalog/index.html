@@ -93,6 +93,37 @@ body.hascart main .wrap{padding-bottom:110px}
 .cart .acts{display:grid;grid-template-columns:1fr 1fr;gap:8px}
 .cart .hint{font-size:12.5px;color:var(--muted);margin:0}
 .toast{position:fixed;left:50%;bottom:calc(90px + env(safe-area-inset-bottom,0px));transform:translateX(-50%);background:var(--ink);color:var(--bg);padding:9px 16px;border-radius:999px;font-size:14px;z-index:20;white-space:nowrap}
+/* list view (default): a small photo on the left, everything a buyer compares on the right, one gecko per row */
+.bar2{display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap;padding-bottom:10px}
+.views{display:inline-flex;border:1px solid var(--line);border-radius:10px;overflow:hidden}
+.views button{border:0;background:var(--surface);padding:7px 14px;font-size:13px;cursor:pointer;min-height:36px}
+.views button[aria-pressed="true"]{background:var(--ink);color:var(--bg)}
+.count{font-size:13px;color:var(--muted)}
+.rows{display:grid;grid-template-columns:1fr;gap:10px}
+@media (min-width:760px){.rows{grid-template-columns:1fr 1fr}}
+@media (min-width:1180px){.rows{grid-template-columns:1fr 1fr 1fr}}
+.item{display:grid;grid-template-columns:112px minmax(0,1fr);gap:12px;background:var(--surface);border:1px solid var(--line);border-radius:14px;padding:10px;min-width:0}
+.item.incart{border-color:var(--accent);box-shadow:0 0 0 1px var(--accent)}
+.thumb{width:112px;height:112px;border-radius:10px;overflow:hidden;background:var(--sunk);border:0;padding:0;position:relative;cursor:zoom-in;display:grid;place-items:center;color:var(--muted);font-size:11.5px}
+.thumb img{width:100%;height:100%;object-fit:cover;display:block}
+.thumb span{position:absolute;right:4px;bottom:4px;background:rgba(0,0,0,.6);color:#fff;font:600 11px var(--f-mono);padding:1px 6px;border-radius:999px}
+.thumb.none{cursor:default}
+.info{display:flex;flex-direction:column;gap:3px;min-width:0}
+.line1{display:flex;align-items:center;gap:8px}
+.no{font:700 16px var(--f-mono)}
+.sx{font-size:12px;font-weight:700;border-radius:999px;padding:1px 9px;background:var(--sunk);color:var(--muted)}
+.sx.m{background:#E2F0FF;color:#1F5FA8}.sx.f{background:#FDE7EF;color:#B03566}
+.name{font-family:var(--f-display);font-weight:700;font-size:17px;line-height:1.35;overflow-wrap:anywhere}
+.het{font-size:13px;color:var(--ink);opacity:.8;overflow-wrap:anywhere}
+.meta{font-size:12.5px;color:var(--muted)}
+.memo{margin-top:4px;background:var(--memo);color:var(--memo-ink);border-radius:8px;padding:5px 9px;font-size:13px;white-space:pre-wrap;overflow-wrap:anywhere}
+.memo b{font-size:11.5px;margin-right:6px}
+.line3{display:flex;justify-content:space-between;align-items:center;gap:8px;margin-top:auto;padding-top:6px}
+.line3 .price{font-size:20px}
+.line3 .add{margin-top:0;min-height:38px;padding:6px 12px;font-size:13px;white-space:nowrap}
+:root{--memo:#FFF4D6;--memo-ink:#6A4B00}
+@media (prefers-color-scheme: dark){:root:not([data-theme="light"]){--memo:#3A2F12;--memo-ink:#F3DFA6}.sx.m{background:#16324F;color:#9CC8F5}.sx.f{background:#45202F;color:#F2A9C4}}
+@media (max-width:380px){.item{grid-template-columns:92px minmax(0,1fr)}.thumb{width:92px;height:92px}}
 @media (prefers-reduced-motion:no-preference){.card{transition:transform .15s ease}.card:hover{transform:translateY(-2px)}}
 </style>
 
@@ -114,6 +145,7 @@ body.hascart main .wrap{padding-bottom:110px}
     </select>
   </div>
   <div class="chips" id="sexes" role="group" aria-label="性別"></div>
+  <div class="bar2"><span class="count" id="count"></span><span class="views" role="group" aria-label="表示"><button data-view="list">一覧</button><button data-view="photo">写真を大きく</button></span></div>
   <div id="list"></div>
 </div></main>
 <footer class="gut">掲載内容は更新時点のものです。在庫状況はお問い合わせください。</footer>
@@ -130,11 +162,12 @@ const yen = n => n == null ? "価格はお問い合わせ" : "¥" + Number(n).to
 const monthsOld = b => { if (!b) return null; const d = (Date.now() - new Date(b + "T00:00:00")) / 864e5; return d < 0 ? null : Math.floor(d / 30.44); };
 const ageText = b => { const m = monthsOld(b); return m == null ? "" : m < 1 ? "生後" + Math.max(0, Math.round((Date.now() - new Date(b + "T00:00:00")) / 864e5)) + "日" : m < 24 ? m + "か月" : Math.floor(m / 12) + "歳"; };
 const sexText = s => s === "♂" ? "♂ オス" : s === "♀" ? "♀ メス" : "性別未判定";
-let data = { title: "卸リスト", items: [] }, sexF = "";
+let data = { title: "卸リスト", items: [] }, sexF = "", view = "list";
+try { view = localStorage.getItem("bm-cat-view") === "photo" ? "photo" : "list"; } catch {}
 function render() {
   const q = $("#q").value.normalize("NFKC").toLowerCase().trim(), sort = $("#sort").value;
   const qn = q.replace(/^no\.?\s*/, "");
-  let items = data.items.filter(x => (!sexF || (sexF === "?" ? !["♂", "♀"].includes(x.sex) : x.sex === sexF)) && (!q || String(x.wno) === qn || [x.morph, x.morphEn].join(" ").normalize("NFKC").toLowerCase().includes(q)));
+  let items = data.items.filter(x => (!sexF || (sexF === "?" ? !["♂", "♀"].includes(x.sex) : x.sex === sexF)) && (!q || String(x.wno) === qn || [x.morph, x.morphEn, x.het, x.note].join(" ").normalize("NFKC").toLowerCase().includes(q)));
   const cmp = {
     no: (a, b) => (a.wno ?? 0) - (b.wno ?? 0),
     morph: (a, b) => String(a.morph).localeCompare(String(b.morph), "ja") || a.id.localeCompare(b.id),
@@ -144,17 +177,33 @@ function render() {
     high: (a, b) => (b.price ?? -1) - (a.price ?? -1),
   }[sort];
   items = items.slice().sort(cmp);
+  document.querySelectorAll("[data-view]").forEach(b => b.setAttribute("aria-pressed", b.dataset.view === view));
+  $("#count").textContent = data.items.length ? items.length + "頭を表示" : "";
+  const born = x => x.birthDate ? (/^\d{4}$/.test(x.birthDate) ? x.birthDate + "年" : x.birthDate.replace(/-/g, ".")) + " 生まれ" + (ageText(x.birthDate) && !/^\d{4}$/.test(x.birthDate) ? "（" + ageText(x.birthDate) + "）" : "") : "";
   $("#list").innerHTML = !data.items.length
     ? `<div class="empty"><b>現在掲載している個体はありません</b>入荷しだい掲載します。</div>`
     : !items.length ? `<div class="empty"><b>条件に合う個体はいません</b>検索や性別の絞り込みを変えてみてください。</div>`
+    : view === "list" ? `<div class="rows">${items.map(x => {
+        const ph = x.photos || [], inCart = cart.includes(x.wno), sx = x.sex === "♂" ? "m" : x.sex === "♀" ? "f" : "";
+        return `<article class="item${inCart ? " incart" : ""}">
+          ${ph.length ? `<button class="thumb" data-ph="${esc(x.wno)}" aria-label="No.${esc(x.wno)} の写真を見る"><img src="${esc(ph[0])}" alt="No.${esc(x.wno)} ${esc(x.morph)}" loading="lazy">${ph.length > 1 ? `<span>${ph.length}枚</span>` : ""}</button>` : `<div class="thumb none">写真準備中</div>`}
+          <div class="info">
+            <div class="line1"><span class="no">No.${esc(x.wno ?? "")}</span><span class="sx ${sx}">${esc(sexText(x.sex))}</span></div>
+            <div class="name">${esc(x.morph || "モルフ未記入")}</div>
+            ${x.het ? `<div class="het">${esc(x.het)}</div>` : ""}
+            ${born(x) ? `<div class="meta">${esc(born(x))}</div>` : ""}
+            ${x.note ? `<div class="memo"><b>備考</b>${esc(x.note)}</div>` : ""}
+            <div class="line3"><span class="price${x.price == null ? " ask" : ""}">${esc(yen(x.price))}</span><button class="add" data-add="${esc(x.wno)}" aria-pressed="${inCart}">${inCart ? "✓ カート内" : "カートに入れる"}</button></div>
+          </div></article>`;
+      }).join("")}</div>`
     : `<div class="grid">${items.map(x => {
         const ph = x.photos || [];
         const inCart = cart.includes(x.wno);
         return `<article class="card${inCart ? " incart" : ""}">
           ${ph.length ? `<button class="photo count-badge" data-ph="${esc(x.wno)}" aria-label="No.${esc(x.wno)} の写真を見る"><img src="${esc(ph[0])}" alt="No.${esc(x.wno)} ${esc(x.morph)}" loading="lazy">${ph.length > 1 ? `<span>${ph.length}枚</span>` : ""}</button>` : `<div class="photo none">写真準備中</div>`}
           <div class="body"><div class="top"><span class="id">No.${esc(x.wno ?? "")}</span><span class="sex">${esc(sexText(x.sex))}</span></div>
-            <div class="morph">${esc(x.morph || "—")}</div>${x.morphEn && x.morphEn !== x.morph ? `<div class="en">${esc(x.morphEn)}</div>` : ""}${x.het ? `<div class="en">${esc(x.het)}</div>` : ""}${x.note ? `<div class="note">備考: ${esc(x.note)}</div>` : ""}
-            <div class="foot"><span>${x.birthDate ? esc(x.birthDate.replace(/-/g, ".")) + " 生まれ" + (ageText(x.birthDate) ? "（" + esc(ageText(x.birthDate)) + "）" : "") : ""}</span><span class="price${x.price == null ? " ask" : ""}">${esc(yen(x.price))}</span></div>
+            <div class="morph">${esc(x.morph || "モルフ未記入")}</div>${x.het ? `<div class="en">${esc(x.het)}</div>` : ""}${x.note ? `<div class="memo"><b>備考</b>${esc(x.note)}</div>` : ""}
+            <div class="foot"><span>${esc(born(x))}</span><span class="price${x.price == null ? " ask" : ""}">${esc(yen(x.price))}</span></div>
             <button class="add" data-add="${esc(x.wno)}" aria-pressed="${inCart}">${inCart ? "✓ カートに入っています" : "カートに入れる"}</button></div></article>`;
       }).join("")}</div>`;
 }
@@ -224,6 +273,7 @@ document.addEventListener("click", e => {
     return;
   }
   if (e.target.id === "cart") { $("#cart").hidden = true; return; }
+  const vw = e.target.closest("[data-view]"); if (vw) { view = vw.dataset.view; try { localStorage.setItem("bm-cat-view", view); } catch {} render(); return; }
   const s = e.target.closest("[data-sex]"); if (s) { sexF = s.dataset.sex; renderSexes(); render(); return; }
   const p = e.target.closest("[data-ph]"); if (p) { const x = data.items.find(i => String(i.wno) === p.dataset.ph); vi = { list: x.photos || [], i: 0 }; showViewer(); return; }
   const v = e.target.closest("[data-v]");
