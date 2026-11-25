@@ -483,10 +483,18 @@ function normId(raw) {
 }
 const ID_RE = /^(P-\d{3,4}|PR\d{2}-\d{3,4}|C\d{2}-\d{3,4}|E\d{2}-\d{4,5}|\d{2}-\d{4,5})$/;
 /* what was typed where an ID goes: a bare number (78, No.78) is the cup number of a gecko on hand, anything else an ID */
-function entryId(raw) {
+/* cup numbers may repeat, so a number can stand for several geckos */
+function cupMatches(raw) {
   const m = String(raw || "").normalize("NFKC").trim().match(/^(?:no\.?\s*)?(\d{1,4})$/i);
-  if (m) { const g = [...S.geckos.values()].find(x => String(x.packNo || "") === String(+m[1]) && !INACTIVE.has(x.status)); if (g) return g.id; }
-  return normId(raw);
+  return m ? [...S.geckos.values()].filter(x => String(x.packNo || "") === String(+m[1]) && !INACTIVE.has(x.status)) : [];
+}
+function entryId(raw) { const c = cupMatches(raw); return c.length ? c[0].id : normId(raw); }
+/* when a typed number is on more than one cup: choose which gecko */
+function pickCup(raw, list, then) {
+  openSheet({ title: "No." + String(raw).replace(/\D/g, "") + " は" + list.length + "頭います", render: s => {
+    s.body.innerHTML = `<p class="note" style="margin:0 0 10px">カップに印刷されたIDで選んでください。</p><div class="list">${list.map(g => `<button class="row" data-cup="${esc(g.id)}"><span class="rid">${esc(g.id)}</span>${sxHTML(g.sex)}<span class="rmain"><span class="rmorph">${esc(mz(g.morph) || "モルフ未入力")}</span><span class="rsub">${esc(g.status)}${g.price != null ? " · " + yen(g.price) : ""}</span></span></button>`).join("")}</div>`;
+    s.body.onclick = e => { const b = e.target.closest("[data-cup]"); if (!b) return; closeSheet(s); then(b.dataset.cup); };
+  } });
 }
 const collOf = id => /^PR\d/.test(id) ? "pairings" : /^C\d/.test(id) ? "clutches" : /^E\d/.test(id) ? "eggs" : "geckos";
 function toDate(v) {
@@ -511,7 +519,7 @@ const toBool = v => v === true || v === "true" || v === 1 || v === "1" || v === 
 const STATUSES = ["育成中", "販売中", "予約済", "委託中", "繁殖用", "引退", "販売済", "死亡"];
 const INACTIVE = new Set(["販売済", "死亡"]);
 const GRADES = ["A", "B", "C", "D", "E"];
-const CHANNELS = ["小売り", "業販", "委託"];
+const CHANNELS = ["小売り", "業販", "委託", "譲渡"];
 const ST_CLASS = { 繁殖用: "s-breed", 育成中: "s-grow", 販売中: "s-sale", 予約済: "s-hold", 委託中: "s-hold", 販売済: "s-sold", 引退: "s-off", 死亡: "s-dead", 産卵中: "s-sale", 終了: "s-off", 孵卵中: "s-grow", 孵化済: "s-sale", 不良: "s-dead", 失敗: "s-dead" };
 const LAY_INTERVAL = 14;
 const BASE_TEMPS = ["28.5", "31.5"];
@@ -1601,7 +1609,7 @@ function ageBuckets(list) {
 const ageLabel = m => m < 0 ? "不明" : m >= 12 ? "12か月〜" : m + "か月";
 function salesStats(sales) {
   const y = today().slice(0, 4), m = today().slice(0, 7);
-  const agg = l => ({ count: l.length, total: l.reduce((a, g) => a + (g.soldPrice || 0), 0), retail: l.filter(g => !["業販", "委託"].includes(g.saleChannel)).length, wholesale: l.filter(g => g.saleChannel === "業販").length, consign: l.filter(g => g.saleChannel === "委託").length });
+  const agg = l => ({ count: l.length, total: l.reduce((a, g) => a + (g.soldPrice || 0), 0), retail: l.filter(g => !["業販", "委託", "譲渡"].includes(g.saleChannel)).length, transfer: l.filter(g => g.saleChannel === "譲渡").length, wholesale: l.filter(g => g.saleChannel === "業販").length, consign: l.filter(g => g.saleChannel === "委託").length });
   return { all: agg(sales), year: agg(sales.filter(g => (g.soldDate || "").startsWith(y))), month: agg(sales.filter(g => (g.soldDate || "").startsWith(m))) };
 }
 
@@ -2023,16 +2031,19 @@ function sellForm(g) {
     title: g.id + " を販売", submit: "販売完了",
     intro: `<div class="infobox">${sxHTML(g.sex)} <b class="mono">${esc(g.id)}</b> ${esc(mz(g.morph) || "")}</div>`,
     fields: [
-      { k: "price", label: "価格（円）", type: "number", ph: "タップで選ぶか入力", chips: priceChips(g) },
+      { k: "price", label: "価格（円）", type: "number", ph: "タップで選ぶか入力（0円の譲渡もできます）", chips: [...priceChips(g), ["0", "¥0（譲渡）"]] },
       { k: "date", label: "販売日", type: "date" },
       { k: "channel", label: "区分", type: "seg", options: CHANNELS, def: g.status === "委託中" ? "委託" : "小売り" },
       eventField(),
       { k: "notes", label: "メモ", type: "textarea", ph: "任意（お客様など）" }],
     values: g.status === "委託中" ? { date: today(), price: g.consignPrice ?? g.price ?? "", notes: "委託先: " + (g.consignee || ""), event: S.settings.curEvent || "" } : { date: today(), price: g.price ?? "", event: S.settings.curEvent || "" },
     onSubmit: async v => {
-      if (toNum(v.price) == null) throw new Error("価格を選ぶか入力してください");
+      if (toNum(v.price) == null) throw new Error("価格を選ぶか入力してください（譲渡なら ¥0）");
+      if (toNum(v.price) < 0) throw new Error("価格は0円以上で入れてください");
+      /* ¥0 with the default kind is a transfer */
+      if (toNum(v.price) === 0 && v.channel === "小売り") v.channel = "譲渡";
       await sellGecko({ id: g.id, ...v }); await rememberEvent(v.event);
-      return g.id + " を販売済にしました" + (v.event ? "（" + v.event.trim() + "）" : "");
+      return g.id + (toNum(v.price) === 0 ? " を0円で譲渡しました" : " を販売済にしました") + (v.event ? "（" + v.event.trim() + "）" : "");
     }
   });
 }
@@ -2064,7 +2075,7 @@ function soldSheet() {
     if (st.tab === "events") {
       const groups = new Map(); for (const g of all) { const k = evName(g); (groups.get(k) || groups.set(k, []).get(k)).push(g); }
       const rows = [...groups.entries()].map(([k, l]) => ({ k, l, first: l[l.length - 1].soldDate || "", last: l[0].soldDate || "" })).sort((a, b) => (a.k ? 0 : 1) - (b.k ? 0 : 1) || b.last.localeCompare(a.last));
-      s.body.innerHTML = tabs + sell + (rows.length ? `<div class="list">${rows.map(r => `<button class="row" data-ev="${esc(r.k)}" style="grid-template-columns:minmax(0,1fr) auto"><span class="rmain"><span class="rmorph">${esc(r.k || "イベントなし")}</span><span class="rsub">${esc(r.first === r.last ? r.last : r.first + " 〜 " + r.last)} · ${r.l.length}頭${["業販", "委託"].some(c => r.l.some(g => g.saleChannel === c)) ? "（" + CHANNELS.map(c => [c, r.l.filter(g => (g.saleChannel || "小売り") === c).length]).filter(x => x[1]).map(x => x[0] + x[1]).join("・") + "）" : ""}</span></span><span class="rprice mono" style="font-size:17px;font-weight:700">${yen(sum(r.l))}</span></button>`).join("")}</div>
+      s.body.innerHTML = tabs + sell + (rows.length ? `<div class="list">${rows.map(r => `<button class="row" data-ev="${esc(r.k)}" style="grid-template-columns:minmax(0,1fr) auto"><span class="rmain"><span class="rmorph">${esc(r.k || "イベントなし")}</span><span class="rsub">${esc(r.first === r.last ? r.last : r.first + " 〜 " + r.last)} · ${r.l.length}頭${["業販", "委託", "譲渡"].some(c => r.l.some(g => g.saleChannel === c)) ? "（" + CHANNELS.map(c => [c, r.l.filter(g => (g.saleChannel || "小売り") === c).length]).filter(x => x[1]).map(x => x[0] + x[1]).join("・") + "）" : ""}</span></span><span class="rprice mono" style="font-size:17px;font-weight:700">${yen(sum(r.l))}</span></button>`).join("")}</div>
         <p class="note">合計 ${all.length}頭 ${yen(sum(all))}。販売のときに「イベント」を入れると、ここにまとまります。あとから個体ごとに直せます。</p>` : `<div class="empty">まだ販売の記録はありません。</div>`);
       return;
     }
@@ -2088,7 +2099,11 @@ function soldSheet() {
       if (a === "allev") { st.ev = null; draw(s); return; }
       const sellId = async id => { const g = await getRec("geckos", id); if (!g) throw new Error(id + " は見つかりません"); if (INACTIVE.has(g.status)) throw new Error(g.id + " はすでに「" + g.status + "」です"); sellForm(g); };
       if (a === "scan") return startScan(async id => { if (collOf(id) !== "geckos") throw new Error("個体のQRではありません（" + id + "）"); await sellId(id); });
-      if (a === "sell") { const v = $("#sd-id", s.body).value; if (!v.trim()) return; try { await sellId(entryId(v)); } catch (x) { toast(x.message); } }
+      if (a === "sell") {
+        const v = $("#sd-id", s.body).value; if (!v.trim()) return;
+        const c = cupMatches(v); if (c.length > 1) return pickCup(v, c, id => sellId(id).catch(x => toast(x.message)));
+        try { await sellId(entryId(v)); } catch (x) { toast(x.message); }
+      }
     };
   } });
 }
@@ -3510,7 +3525,8 @@ function failForm(e, after) {
 /* ---------- packing mode: cage → pudding cup ----------
    scan a gecko, give it a temporary number and a price; its business card and 2cm cup label go to the print queues */
 const packItems = () => (S.packing.items || []).slice().sort((a, b) => a.no - b.no);
-const nextPackNo = () => packItems().reduce((m, x) => Math.max(m, Number(x.no) || 0), 0) + 1;
+/* the number offered next is the one after the last number entered (so a run can start at 50, or go back and continue) */
+const nextPackNo = () => (Number(S.packing.lastNo) || packItems().reduce((m, x) => Math.max(m, Number(x.no) || 0), 0)) + 1;
 async function packAdd({ id, no, price }) {
   needDb();
   const g = await getRec("geckos", id); if (!g) throw new Error(normId(id) + " という個体は見つかりません");
@@ -3518,14 +3534,12 @@ async function packAdd({ id, no, price }) {
   const n = Math.round(toNum(no)), p = toNum(price);
   if (!n || n < 1) throw new Error("番号を決めてください");
   if (p == null) throw new Error("価格を選ぶか入力してください");
-  const clash = packItems().find(x => x.no === n && x.id !== g.id); if (clash) throw new Error("No." + n + " はすでに " + clash.id + " に使っています");
-  /* a cup number belongs to one gecko on hand at a time: one left from an earlier packing gives it up */
-  for (const o of [...S.geckos.values()]) if (o.id !== g.id && String(o.packNo || "") === String(n)) await putRec("geckos", o.id, { packNo: "" }, "カップ No." + n + " を " + g.id + " に").catch(() => {});
+  /* the same cup number may go on more than one gecko (the ID beside it tells them apart) */
   await updateGecko(g.id, { price: p, packNo: String(n) }, "パッキング No." + n);
   await queueAdd([g.id], "card");
   await queueAdd([g.id], "cup", { packNo: n });
   const items = packItems().filter(x => x.id !== g.id).concat({ id: g.id, no: n, price: p, morph: g.morph || "", at: nowTs() }).sort((a, b) => a.no - b.no);
-  await saveMeta("packing", { items }); S.packing = { ...S.packing, items };
+  await saveMeta("packing", { items, lastNo: n }); S.packing = { ...S.packing, items, lastNo: n };
   return { id: g.id, no: n, price: p };
 }
 async function packRemove(id) {
@@ -3536,7 +3550,7 @@ async function packRemove(id) {
 /* ending a packing starts the next one from No.1; each gecko keeps its cup number (found by it, printed on its card)
    until the number is given to another gecko */
 async function packEnd() {
-  await saveMeta("packing", { items: [] }); S.packing = { items: [] };
+  await saveMeta("packing", { items: [], lastNo: 0 }); S.packing = { items: [], lastNo: 0 };
 }
 function packingSheet() {
   const st = { id: "", no: null, price: "" };
@@ -3563,7 +3577,7 @@ function packingSheet() {
       ${items.length ? `<div class="list">${items.map(x => { const gg = S.geckos.get(x.id); return `<div class="row r3"><span class="pkno">${esc(x.no)}</span><span class="rmain"><span class="rmorph">${esc(gg?.morph || x.morph || "")}</span><span class="rsub"><button class="idlink" data-open="${esc(x.id)}">${esc(x.id)}</button> ${yen(x.price)}</span></span><button class="btn sm" data-pkdel="${esc(x.id)}">外す</button></div>`; }).join("")}</div>`
         : `<div class="empty">まだありません。</div>`}
       <div class="botacts"><button class="btn abtn" data-pk="queue">印刷待ち（名刺${qn("card")}・カップ${qn("cup")}）</button><button class="btn abtn danger" data-pk="end">${armEnd ? "もう一度で終了" : "パッキング終了"}</button></div>
-      <p class="note">終了すると次のパッキングは No.1 から始まります。カップの番号は個体に残り、番号で探したり（販売済み・売上 → 番号で販売）名刺に印刷したりできます。同じ番号を別の個体に付けると、前の個体からは外れます。</p>`;
+      <p class="note">番号の欄には、前に入れた番号の次が出ます。同じ番号を別の個体に付けても大丈夫です（カップにはIDも印刷されます）。終了すると次のパッキングは No.1 から始まります。カップの番号は個体に残り、番号で探したり（販売済み・売上 → 番号で販売）名刺に印刷したりできます。</p>`;
   };
   const refresh = s => {
     const a = document.activeElement; if (a && a.tagName === "INPUT" && s.el.contains(a)) return; /* don't redraw under the user's typing */
@@ -3702,7 +3716,7 @@ function listSheet(M) {
       const wp = t.closest("[data-wp]"); if (wp) { $("#wq-price", s.body).value = wp.dataset.wp; st.price = wp.dataset.wp; return; }
       const ed = t.closest("[data-wedit]"); if (ed) { st.id = ed.dataset.wedit; st.price = ""; st.note = null; await draw(s); s.body.scrollTop = 0; return; }
       const del = t.closest("[data-wdel]"); if (del) { try { await listRemove(M, del.dataset.wdel); draw(s); } catch (x) { toast(x.message); } return; }
-      const en = t.closest("[data-enter]"); if (en) { const v = $("#ide-" + k, s.body).value; if (v.trim()) { st.id = entryId(v); st.price = ""; st.note = null; draw(s); } return; }
+      const en = t.closest("[data-enter]"); if (en) { const v = $("#ide-" + k, s.body).value; if (v.trim()) { const c = cupMatches(v), go = id => { st.id = id; st.price = ""; st.note = null; draw(s); }; if (c.length > 1) pickCup(v, c, go); else go(entryId(v)); } return; }
       const b = t.closest("[data-wq]"); if (!b) return;
       const a = b.dataset.wq;
       if (a === "scan") return startScan(id => { if (collOf(id) !== "geckos") throw new Error("個体のQRではありません（" + id + "）"); st.id = id; st.price = ""; st.note = null; draw(s); });
@@ -4579,7 +4593,7 @@ $("#chat-in").addEventListener("keydown", e => { if (e.key === "Enter" && (e.met
 document.addEventListener("keydown", e => { if (e.key === "Escape" && sheets.length) closeSheet(sheets[sheets.length - 1]); });
 
 /* ---------- app: budget / backup strip, settings, automatic backup, updates ---------- */
-const APP_VERSION = "2026-11-26-3";
+const APP_VERSION = "2026-11-26-4";
 const fmtGB = b => (b / 1e9).toFixed(b >= 1e10 ? 0 : 1) + "GB";
 const fmtTime = t => t ? new Date(t).toLocaleString("ja-JP", { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" }) : "まだありません";
 function setPill(el, { val, ratio, state }) {
