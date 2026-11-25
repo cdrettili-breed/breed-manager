@@ -234,7 +234,9 @@ function orderText() {
   const it = cartItems().slice().sort((a, b) => a.wno - b.wno), note = ($("#c-note")?.value || "").trim();
   return [`【${data.title || "卸リスト"} 注文】`, who ? "お名前: " + who : "", "",
     ...it.map(x => [`No.${x.wno}`, x.sex, x.morph, x.het].filter(Boolean).join(" ") + "  " + yen(x.price)), "",
-    `合計 ${it.length}頭 ${yen(cartSum())}${cartAsk() ? "（価格お問い合わせの個体を除く）" : ""}`, note ? "\n備考: " + note : ""].join("\n").replace(/\n{3,}/g, "\n\n").trim();
+    `合計 ${it.length}頭 ${yen(cartSum())}${cartAsk() ? "（価格お問い合わせの個体を除く）" : ""}`, note ? "\n備考: " + note : "",
+    /* the seller's app reads this line back into the geckos ordered; it means nothing to anyone else */
+    it.some(x => x.ref) ? "\n―― 出品者の管理用コード（消さずに送ってください）――\nBMO1." + it.map(x => String(x.ref || "").replace(/^BMQ1/, "") || "-").join(".") : ""].join("\n").replace(/\n{3,}/g, "\n\n").trim();
 }
 function showCart() {
   const it = cartItems().slice().sort((a, b) => a.wno - b.wno), c = $("#cart");

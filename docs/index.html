@@ -2025,7 +2025,7 @@ function priceChips(g) {
   const same = (S.sales || []).filter(x => x.morph === g.morph && x.soldPrice != null).sort((a, b) => b.soldDate.localeCompare(a.soldDate)).map(x => String(x.soldPrice));
   return [...new Set([...(g.price != null ? [String(g.price)] : []), ...same.slice(0, 3), "8000", "10000", "15000", "20000", "30000"])].slice(0, 7).map(p => [p, yen(p)]);
 }
-function sellForm(g) {
+function sellForm(g, pre = {}) {
   if (!S.sales && S.db) loadSales().then(s => { S.sales = s; }).catch(() => {});
   openForm({
     title: g.id + " を販売", submit: "販売完了",
@@ -2036,7 +2036,7 @@ function sellForm(g) {
       { k: "channel", label: "区分", type: "seg", options: CHANNELS, def: g.status === "委託中" ? "委託" : "小売り" },
       eventField(),
       { k: "notes", label: "メモ", type: "textarea", ph: "任意（お客様など）" }],
-    values: g.status === "委託中" ? { date: today(), price: g.consignPrice ?? g.price ?? "", notes: "委託先: " + (g.consignee || ""), event: S.settings.curEvent || "" } : { date: today(), price: g.price ?? "", event: S.settings.curEvent || "" },
+    values: g.status === "委託中" ? { date: today(), price: g.consignPrice ?? g.price ?? "", notes: "委託先: " + (g.consignee || ""), event: S.settings.curEvent || "" } : { date: today(), price: g.price ?? "", event: S.settings.curEvent || "", ...pre },
     onSubmit: async v => {
       if (toNum(v.price) == null) throw new Error("価格を選ぶか入力してください（譲渡なら ¥0）");
       if (toNum(v.price) < 0) throw new Error("価格は0円以上で入れてください");
@@ -2062,6 +2062,59 @@ function editSaleForm(g, after) {
       { k: "channel", label: "区分", type: "seg", options: CHANNELS, def: "小売り" }, eventField(), { k: "notes", label: "メモ", type: "textarea", ph: "任意" }],
     values: { price: g.soldPrice ?? "", date: g.soldDate || today(), channel: g.saleChannel || "小売り", event: g.saleEvent || "", notes: g.saleNotes || "" },
     onSubmit: async v => { await editSale(g.id, v); after?.(); return g.id + " の販売内容を直しました"; } });
+}
+/* ---------- a buyer's cart order (sent by LINE or copied from the wholesale page) ----------
+   The order text ends with "BMO1." and one locked code per gecko, in the order of its No. lines; only this ledger's key
+   opens them, so the buyer never sees the IDs but this app knows exactly which geckos were ordered. */
+function parseOrder(text) {
+  const t = String(text || "").normalize("NFKC"), m = t.match(/BMO1\.([A-Za-z0-9_\-.]+)/); if (!m) return null;
+  const codes = m[1].split(".").filter(Boolean);
+  const lines = [...t.matchAll(/^No\.(\d+)\s+(.*?)\s{2,}(¥[\d,]+|価格はお問い合わせ)\s*$/gm)].map(x => ({ no: +x[1], text: x[2], price: x[3].startsWith("¥") ? toNum(x[3]) : null }));
+  const who = (t.match(/^お名前:\s*(.+)$/m) || [])[1] || "", note = (t.match(/^備考:\s*([\s\S]*?)(?=\n\s*\n|\n――|$)/m) || [])[1] || "";
+  return { who: who.trim(), note: note.trim(), items: codes.map((c, i) => ({ id: c === "-" ? "" : qrDecode("BMQ1" + c) || "", ...(lines[i] || { no: null, text: "", price: null }) })) };
+}
+function orderSheet(text) {
+  const st = { text }; let cur = null;
+  openSheet({ title: "カートの注文", render: s => {
+    const draw = async () => {
+      const o = st.text ? parseOrder(st.text) : null;
+      if (!o) {
+        s.body.innerHTML = `<p class="note" style="margin:0 0 10px">お客様から届いたカートの注文（LINEなど）をそのままコピーして、ここに貼り付けてください。最後の「出品者の管理用コード」から、どの個体の注文かを読み取ります。チャット欄に貼り付けても開きます。</p>
+          <textarea id="od-text" rows="8" placeholder="【卸リスト 注文】…" style="width:100%;font-size:16px">${esc(st.text)}</textarea>
+          ${st.text ? `<div class="infobox warn" style="margin-top:8px">管理用コード（BMO1. で始まる行）が見つかりません。注文の全文を貼り付けてください。</div>` : ""}
+          <div class="botacts"><button class="btn abtn" data-od="paste">クリップボードから貼り付け</button><button class="btn abtn primary" data-od="read">読み込む</button></div>`;
+        return;
+      }
+      const gs = await Promise.all(o.items.map(x => x.id ? getRec("geckos", x.id).catch(() => null) : null));
+      const known = o.items.filter((x, i) => gs[i]).length, open = gs.filter(g => g && SALE_OPEN.includes(g.status) && g.status !== "予約済");
+      const sum = o.items.reduce((a, x) => a + (x.price || 0), 0);
+      s.body.innerHTML = `
+        <div class="infobox">${o.who ? `<b>${esc(o.who)}</b> 様からの注文 · ` : ""}${o.items.length}頭 · ${yen(sum)}${o.note ? `<br><span class="small">備考: ${esc(o.note)}</span>` : ""}</div>
+        ${known < o.items.length ? `<div class="infobox warn" style="margin-top:8px">${o.items.length - known}頭は、この台帳のコードではないか、すでに削除された個体です。</div>` : ""}
+        <div class="list" style="margin-top:10px">${o.items.map((x, i) => { const g = gs[i]; return `<div class="row" style="grid-template-columns:auto minmax(0,1fr) auto">
+          <span class="pkno">${x.no ?? "?"}</span>
+          <span class="rmain">${g ? `<span class="rmorph"><button class="idlink" data-open="${esc(g.id)}">${esc(g.id)}</button> ${sxHTML(g.sex)} ${esc(mz(g.morph) || "")}</span><span class="rsub">${pill(g.status)} 注文 ${yen(x.price)}${g.wholesalePrice != null && g.wholesalePrice !== x.price ? ` · 今の卸価格 ${yen(g.wholesalePrice)}` : ""}</span>` : `<span class="rmorph">${esc(x.text || "不明な個体")}</span><span class="rsub">IDを読み取れませんでした</span>`}</span>
+          ${g && !INACTIVE.has(g.status) ? `<button class="btn sm" data-osell="${i}">販売</button>` : `<span></span>`}</div>`; }).join("")}</div>
+        <div class="botacts">${open.length ? `<button class="btn abtn primary" data-od="hold">${open.length}頭を予約済にする</button>` : `<span></span>`}<button class="btn abtn" data-od="other">別の注文を読み込む</button></div>
+        <p class="note">「販売」で、注文の価格・業販・お客様名を入れた販売画面が開きます。</p>`;
+      cur = { o, gs };
+    };
+    draw();
+    s.body.onclick = async e => {
+      const t = e.target;
+      const sl = t.closest("[data-osell]"); if (sl) { const { o, gs } = cur, i = +sl.dataset.osell, g = gs[i]; if (g) sellForm(g, { price: o.items[i].price ?? g.wholesalePrice ?? "", channel: "業販", notes: o.who ? "注文: " + o.who : "" }); return; }
+      const b = t.closest("[data-od]"); if (!b) return;
+      const a = b.dataset.od;
+      if (a === "paste") { try { st.text = await navigator.clipboard.readText(); } catch { toast("貼り付けできませんでした。欄を長押しして貼り付けてください"); return; } draw(); return; }
+      if (a === "read") { st.text = $("#od-text", s.body).value; draw(); return; }
+      if (a === "other") { st.text = ""; draw(); return; }
+      if (a === "hold") {
+        const { o, gs } = cur; b.disabled = true;
+        try { let n = 0; for (const g of gs) if (g && SALE_OPEN.includes(g.status) && g.status !== "予約済") { await updateGecko(g.id, { status: "予約済" }, "カートの注文" + (o.who ? "（" + o.who + "）" : "")); n++; } toast(n + "頭を予約済にしました"); draw(); }
+        catch (x) { toast(x.message); b.disabled = false; }
+      }
+    };
+  } });
 }
 /* ---------- sold geckos: the list (newest first), each sale editable, and the takings per event ---------- */
 function soldSheet() {
@@ -2228,12 +2281,13 @@ function addMenu() {
       <button class="card" data-pick="gecko"><b>個体を登録</b><div class="meta">購入した個体など。IDを自動発行</div></button>
       <button class="card" data-pick="packing"><b>パッキングモード</b><div class="meta">QRを読んで番号と価格を決め、名刺とカップラベルを印刷待ちへ</div></button>
       <button class="card" data-pick="sold"><b>販売済み・売上</b><div class="meta">販売済みの個体の一覧と販売額の修正、イベントごとの売上。カップの番号で販売</div></button>
+      <button class="card" data-pick="order"><b>カートの注文を読み込む</b><div class="meta">卸リストのカートから送られた注文を貼り付けると、どの個体の注文かがわかります</div></button>
       <button class="card" data-pick="wholesale"><b>卸モード</b><div class="meta">QRを読んで写真と卸価格を決め、卸リスト（カタログ）へ</div></button>
       <button class="card" data-pick="sales"><b>販売モード</b><div class="meta">QRを読んで写真と販売価格を決め、一般のお客様向けの販売リストへ</div></button>
       <button class="card" data-pick="morphs"><b>モルフの登録</b><div class="meta">ベース（遺伝子）・コンボ・ラインの追加、変更、削除</div></button>
       <button class="card" data-pick="settings"><b>設定</b><div class="meta">ClaudeのAPIキーと予算、Dropboxバックアップ、データの書き出し</div></button></div>`;
     s.body.addEventListener("click", e => { const b = e.target.closest("[data-pick]"); if (!b) return; closeSheet(s);
-      ({ gecko: () => newGeckoForm(), pair: () => pairingFlow(), lay: () => layPicker(), hatch: () => hatchPicker(), packing: () => packingSheet(), sold: () => soldSheet(), wholesale: () => wholesaleSheet(), sales: () => salesSheet(), morphs: () => morphSheet(), settings: () => settingsSheet() })[b.dataset.pick](); });
+      ({ gecko: () => newGeckoForm(), pair: () => pairingFlow(), lay: () => layPicker(), hatch: () => hatchPicker(), packing: () => packingSheet(), sold: () => soldSheet(), order: () => orderSheet(""), wholesale: () => wholesaleSheet(), sales: () => salesSheet(), morphs: () => morphSheet(), settings: () => settingsSheet() })[b.dataset.pick](); });
   } });
 }
 
@@ -3726,7 +3780,9 @@ function listSheet(M) {
       if (a === "publish") {
         b.disabled = true; const label = b.textContent; b.textContent = "公開しています…";
         /* the page always gets the latest names, prices and notes (sold geckos drop out) */
-        try { await listRefresh(M); const r = await M.pub().publish(S[M.st], (n, all) => { b.textContent = `写真を送っています ${n}/${all}`; }); toast(r.count + "頭の" + M.title + "を公開しました。1〜2分で反映されます"); draw(s); }
+        /* each gecko goes out with its ID locked by this ledger's key (like the QR labels): a buyer's cart order carries
+           these back, and only this app can turn them into IDs */
+        try { await listRefresh(M); const r = await M.pub().publish({ ...S[M.st], items: listItems(M).map(x => ({ ...x, ref: qrKey() ? qrText(x.id) : "" })) }, (n, all) => { b.textContent = `写真を送っています ${n}/${all}`; }); toast(r.count + "頭の" + M.title + "を公開しました。1〜2分で反映されます"); draw(s); }
         catch (x) { toast(x.message); b.disabled = false; b.textContent = label; if (x.code === "no_gh" || x.code === "gh_auth") settingsSheet("catalog"); }
         return;
       }
@@ -4500,6 +4556,8 @@ function attBlocks(list) {
 }
 async function send(text) {
   text = text.trim(); if ((!text && !pendingAtt.length) || ctl) return;
+  /* a buyer's cart order pasted here opens as an order, not a chat message */
+  if (/BMO1\.[A-Za-z0-9_\-.]+/.test(text)) { orderSheet(text); const i = $("#chat-in"); if (i && i.value.includes("BMO1.")) i.value = ""; return; }
   chatCtx = null;
   if (!sample || !toolsOk) { toast("チャットを使えません。アプリを開き直してください"); return; }
   const atts = pendingAtt.map(a => ({ ...a, n: chatAtt.push(null) }));
@@ -4593,7 +4651,7 @@ $("#chat-in").addEventListener("keydown", e => { if (e.key === "Enter" && (e.met
 document.addEventListener("keydown", e => { if (e.key === "Escape" && sheets.length) closeSheet(sheets[sheets.length - 1]); });
 
 /* ---------- app: budget / backup strip, settings, automatic backup, updates ---------- */
-const APP_VERSION = "2026-11-26-4";
+const APP_VERSION = "2026-11-26-5";
 const fmtGB = b => (b / 1e9).toFixed(b >= 1e10 ? 0 : 1) + "GB";
 const fmtTime = t => t ? new Date(t).toLocaleString("ja-JP", { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" }) : "まだありません";
 function setPill(el, { val, ratio, state }) {
