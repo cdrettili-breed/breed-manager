@@ -2117,8 +2117,26 @@ function orderSheet(text) {
   } });
 }
 /* ---------- sold geckos: the list (newest first), each sale editable, and the takings per event ---------- */
-function soldSheet() {
-  const st = { tab: "list", ev: null, q: "" };
+/* sales by event: [{ k: event ("" = none), l: geckos, first, last }], the latest event first, unnamed last */
+function eventGroups(sales) {
+  const all = sales.slice().sort((a, b) => String(b.soldDate || "").localeCompare(String(a.soldDate || "")));
+  const groups = new Map(); for (const g of all) { const k = g.saleEvent || ""; (groups.get(k) || groups.set(k, []).get(k)).push(g); }
+  return [...groups.entries()].map(([k, l]) => ({ k, l, first: l[l.length - 1].soldDate || "", last: l[0].soldDate || "" })).sort((a, b) => (a.k ? 0 : 1) - (b.k ? 0 : 1) || b.last.localeCompare(a.last));
+}
+/* the sales panel at the top of the stock tab: this month, this year, and the latest events; tapping opens 売上管理 */
+function salesPanelHTML() {
+  if (!S.sales) return `<h3 class="sec-h">売上管理</h3><div class="empty">読み込み中…</div>`;
+  const y = today().slice(0, 4), m = today().slice(0, 7), sum = l => l.reduce((a, g) => a + (g.soldPrice || 0), 0);
+  const inM = S.sales.filter(g => (g.soldDate || "").startsWith(m)), inY = S.sales.filter(g => (g.soldDate || "").startsWith(y));
+  const ev = eventGroups(S.sales).filter(r => r.k).slice(0, 5);
+  return `<h3 class="sec-h">売上管理 <span class="count">タップで詳しく</span></h3>
+    <div class="tiles"><button class="tile hl" data-act="sales" style="text-align:left"><div class="k">今月の売上</div><div class="v">${yen(sum(inM))}</div><div class="k">${inM.length}頭</div></button>
+      <button class="tile" data-act="sales" style="text-align:left"><div class="k">今年の売上</div><div class="v">${yen(sum(inY))}</div><div class="k">${inY.length}頭</div></button></div>
+    ${ev.length ? `<div class="list" style="margin-top:10px">${ev.map(r => `<button class="row" data-act="sales-ev" data-evk="${esc(r.k)}" style="grid-template-columns:minmax(0,1fr) auto"><span class="rmain"><span class="rmorph">${esc(r.k)}</span><span class="rsub">${esc(r.first === r.last ? r.last : r.first + " 〜 " + r.last)} · ${r.l.length}頭</span></span><span class="rprice mono" style="font-size:16px;font-weight:700">${yen(sum(r.l))}</span></button>`).join("")}</div>` : `<p class="note">販売のときに「イベント」を入れると、ここにイベントごとの売上が出ます。</p>`}
+    <button class="btn abtn block" data-act="sales-events" style="margin-top:8px">売上管理を開く（イベント別・販売済みの一覧）</button>`;
+}
+function soldSheet(opts = {}) {
+  const st = { tab: opts.tab || "list", ev: opts.ev ?? null, q: "" };
   const draw = async s => {
     if (!S.sales) { s.body.innerHTML = `<div class="empty">読み込み中…</div>`; S.sales = await loadSales().catch(() => []); }
     const all = S.sales.slice().sort((a, b) => String(b.soldDate || "").localeCompare(String(a.soldDate || "")) || b.id.localeCompare(a.id));
@@ -2126,8 +2144,7 @@ function soldSheet() {
     const sum = l => l.reduce((a, g) => a + (g.soldPrice || 0), 0);
     const sell = `<div class="idrow" style="margin:10px 0"><input id="sd-id" placeholder="カップの番号かIDで販売（例 78）" autocomplete="off" aria-label="カップの番号かID"><button class="btn" data-sd="sell">販売</button><button class="btn" data-sd="scan" aria-label="QRで販売">${QR_ICON}</button></div>`;
     if (st.tab === "events") {
-      const groups = new Map(); for (const g of all) { const k = evName(g); (groups.get(k) || groups.set(k, []).get(k)).push(g); }
-      const rows = [...groups.entries()].map(([k, l]) => ({ k, l, first: l[l.length - 1].soldDate || "", last: l[0].soldDate || "" })).sort((a, b) => (a.k ? 0 : 1) - (b.k ? 0 : 1) || b.last.localeCompare(a.last));
+      const rows = eventGroups(all);
       s.body.innerHTML = tabs + sell + (rows.length ? `<div class="list">${rows.map(r => `<button class="row" data-ev="${esc(r.k)}" style="grid-template-columns:minmax(0,1fr) auto"><span class="rmain"><span class="rmorph">${esc(r.k || "イベントなし")}</span><span class="rsub">${esc(r.first === r.last ? r.last : r.first + " 〜 " + r.last)} · ${r.l.length}頭${["業販", "委託", "譲渡"].some(c => r.l.some(g => g.saleChannel === c)) ? "（" + CHANNELS.map(c => [c, r.l.filter(g => (g.saleChannel || "小売り") === c).length]).filter(x => x[1]).map(x => x[0] + x[1]).join("・") + "）" : ""}</span></span><span class="rprice mono" style="font-size:17px;font-weight:700">${yen(sum(r.l))}</span></button>`).join("")}</div>
         <p class="note">合計 ${all.length}頭 ${yen(sum(all))}。販売のときに「イベント」を入れると、ここにまとまります。あとから個体ごとに直せます。</p>` : `<div class="empty">まだ販売の記録はありません。</div>`);
       return;
@@ -2139,7 +2156,7 @@ function soldSheet() {
       ${st.ev != null ? `<div class="infobox" style="margin-bottom:8px">${esc(st.ev || "イベントなし")} の ${l.length}頭 · <b class="mono">${yen(sum(l))}</b> <button class="btn sm" data-sd="allev">すべて表示</button></div>` : `<p class="note" style="margin:0 0 8px">${l.length}頭 · 合計 <b class="mono">${yen(sum(l))}</b>　販売額を押すと直せます。</p>`}
       ${l.length ? `<div class="list">${l.map(g => `<div class="row" style="grid-template-columns:auto minmax(0,1fr) auto"><button class="idlink rid" data-open="${esc(g.id)}">${esc(g.id)}</button><span class="rmain"><span class="rmorph">${sxHTML(g.sex)} ${esc(mz(g.morph) || "モルフ未入力")}</span><span class="rsub">${esc(g.soldDate || "")} · ${esc(g.saleChannel || "小売り")}${g.saleEvent ? " · " + esc(g.saleEvent) : ""}${g.packNo ? " · カップNo." + esc(g.packNo) : ""}</span></span><button class="btn sm mono" data-sedit="${esc(g.id)}" aria-label="${esc(g.id)} の販売額を直す">${yen(g.soldPrice)}</button></div>`).join("")}</div>` : `<div class="empty">該当する個体はありません。</div>`}`;
   };
-  openSheet({ title: "販売済み・売上", refresh: s => { const a = document.activeElement; if (a && a.tagName === "INPUT" && s.el.contains(a)) return; draw(s); }, render: s => {
+  openSheet({ title: "売上管理", refresh: s => { const a = document.activeElement; if (a && a.tagName === "INPUT" && s.el.contains(a)) return; draw(s); }, render: s => {
     draw(s);
     s.body.oninput = e => { if (e.target.id === "sd-q") { st.q = e.target.value; clearTimeout(st.t); st.t = setTimeout(() => { draw(s).then(() => { const i = $("#sd-q", s.body); if (i) { i.focus(); i.setSelectionRange(i.value.length, i.value.length); } }); }, 250); } };
     s.body.onclick = async e => {
@@ -2279,15 +2296,24 @@ function addMenu() {
   openSheet({ title: "新規登録", render: s => {
     s.body.innerHTML = `<div class="cards">
       <button class="card" data-pick="gecko"><b>個体を登録</b><div class="meta">購入した個体など。IDを自動発行</div></button>
-      <button class="card" data-pick="packing"><b>パッキングモード</b><div class="meta">QRを読んで番号と価格を決め、名刺とカップラベルを印刷待ちへ</div></button>
-      <button class="card" data-pick="sold"><b>販売済み・売上</b><div class="meta">販売済みの個体の一覧と販売額の修正、イベントごとの売上。カップの番号で販売</div></button>
-      <button class="card" data-pick="order"><b>カートの注文を読み込む</b><div class="meta">卸リストのカートから送られた注文を貼り付けると、どの個体の注文かがわかります</div></button>
-      <button class="card" data-pick="wholesale"><b>卸モード</b><div class="meta">QRを読んで写真と卸価格を決め、卸リスト（カタログ）へ</div></button>
-      <button class="card" data-pick="sales"><b>販売モード</b><div class="meta">QRを読んで写真と販売価格を決め、一般のお客様向けの販売リストへ</div></button>
+      <button class="card" data-pick="modes"><b>モード</b><div class="meta">パッキングモード・卸モード・販売モード、カートの注文の読み込み</div></button>
       <button class="card" data-pick="morphs"><b>モルフの登録</b><div class="meta">ベース（遺伝子）・コンボ・ラインの追加、変更、削除</div></button>
       <button class="card" data-pick="settings"><b>設定</b><div class="meta">ClaudeのAPIキーと予算、Dropboxバックアップ、データの書き出し</div></button></div>`;
     s.body.addEventListener("click", e => { const b = e.target.closest("[data-pick]"); if (!b) return; closeSheet(s);
-      ({ gecko: () => newGeckoForm(), pair: () => pairingFlow(), lay: () => layPicker(), hatch: () => hatchPicker(), packing: () => packingSheet(), sold: () => soldSheet(), order: () => orderSheet(""), wholesale: () => wholesaleSheet(), sales: () => salesSheet(), morphs: () => morphSheet(), settings: () => settingsSheet() })[b.dataset.pick](); });
+      ({ gecko: () => newGeckoForm(), pair: () => pairingFlow(), lay: () => layPicker(), hatch: () => hatchPicker(), modes: () => modeMenu(), morphs: () => morphSheet(), settings: () => settingsSheet() })[b.dataset.pick](); });
+  } });
+}
+/* the working modes, together in one place */
+function modeMenu() {
+  openSheet({ title: "モード", render: s => {
+    s.body.innerHTML = `<div class="cards">
+      <button class="card" data-pick="packing"><b>パッキングモード${packItems().length ? `（${packItems().length}）` : ""}</b><div class="meta">QRを読んで番号と価格を決め、名刺とカップラベルを印刷待ちへ</div></button>
+      <button class="card" data-pick="wholesale"><b>卸モード${catalogItems().length ? `（${catalogItems().length}）` : ""}</b><div class="meta">QRを読んで写真と卸価格を決め、卸リスト（カタログ）へ</div></button>
+      <button class="card" data-pick="sales"><b>販売モード${listItems(LISTS.rt).length ? `（${listItems(LISTS.rt).length}）` : ""}</b><div class="meta">QRを読んで写真と販売価格を決め、一般のお客様向けの販売リストへ</div></button>
+      <button class="card" data-pick="order"><b>カートの注文を読み込む</b><div class="meta">卸リストのカートから送られた注文を貼り付けると、どの個体の注文かがわかります</div></button></div>
+      <p class="note">売上の確認・販売額の修正は「在庫」の「売上管理」からできます。</p>`;
+    s.body.addEventListener("click", e => { const b = e.target.closest("[data-pick]"); if (!b) return; closeSheet(s);
+      ({ packing: () => packingSheet(), wholesale: () => wholesaleSheet(), sales: () => salesSheet(), order: () => orderSheet("") })[b.dataset.pick](); });
   } });
 }
 
@@ -3631,7 +3657,7 @@ function packingSheet() {
       ${items.length ? `<div class="list">${items.map(x => { const gg = S.geckos.get(x.id); return `<div class="row r3"><span class="pkno">${esc(x.no)}</span><span class="rmain"><span class="rmorph">${esc(gg?.morph || x.morph || "")}</span><span class="rsub"><button class="idlink" data-open="${esc(x.id)}">${esc(x.id)}</button> ${yen(x.price)}</span></span><button class="btn sm" data-pkdel="${esc(x.id)}">外す</button></div>`; }).join("")}</div>`
         : `<div class="empty">まだありません。</div>`}
       <div class="botacts"><button class="btn abtn" data-pk="queue">印刷待ち（名刺${qn("card")}・カップ${qn("cup")}）</button><button class="btn abtn danger" data-pk="end">${armEnd ? "もう一度で終了" : "パッキング終了"}</button></div>
-      <p class="note">番号の欄には、前に入れた番号の次が出ます。同じ番号を別の個体に付けても大丈夫です（カップにはIDも印刷されます）。終了すると次のパッキングは No.1 から始まります。カップの番号は個体に残り、番号で探したり（販売済み・売上 → 番号で販売）名刺に印刷したりできます。</p>`;
+      <p class="note">番号の欄には、前に入れた番号の次が出ます。同じ番号を別の個体に付けても大丈夫です（カップにはIDも印刷されます）。終了すると次のパッキングは No.1 から始まります。カップの番号は個体に残り、番号で探したり（在庫 → 売上管理 → 番号で販売）名刺に印刷したりできます。</p>`;
   };
   const refresh = s => {
     const a = document.activeElement; if (a && a.tagName === "INPUT" && s.el.contains(a)) return; /* don't redraw under the user's typing */
@@ -4051,7 +4077,8 @@ function openEgg(id) {
 /* ---------- views ---------- */
 const offlineBanner = () => S.db ? "" : `<div class="banner">台帳のデータを開けませんでした。アプリを開き直してください。</div>`;
 function geckoRow(g) {
-  const sub = [mz(geneLine(g)) || "", isBreeding(g) && isSale(g) ? "繁殖・販売" : "", age(g.birthDate), !isBreeding(g) && (g.sireId || g.damId) ? (g.sireId || "?") + "×" + (g.damId || "?") : ""].filter(Boolean).join(" · ");
+  const sub = g.status === "販売済" ? [mz(geneLine(g)) || "", (g.soldDate || "") + " 販売", g.saleChannel && g.saleChannel !== "小売り" ? g.saleChannel : "", g.saleEvent || ""].filter(Boolean).join(" · ")
+    : [mz(geneLine(g)) || "", isBreeding(g) && isSale(g) ? "繁殖・販売" : "", age(g.birthDate), !isBreeding(g) && (g.sireId || g.damId) ? (g.sireId || "?") + "×" + (g.damId || "?") : ""].filter(Boolean).join(" · ");
   return `<button class="row" data-open="${esc(g.id)}"><span class="rid">${esc(g.id)}</span>${sxHTML(g.sex)}<span class="rmain"><span class="rmorph">${esc(mz(g.morph) || "モルフ未入力")}</span><span class="rsub">${esc(sub || "—")}</span></span><span class="rright">${pill(g.status)}<span>${gradeHTML(g.grade)}${g.status === "販売済" ? ` <span class="rprice">${yen(g.soldPrice)}</span>` : ""}</span></span></button>`;
 }
 function renderGeckos() {
@@ -4066,12 +4093,16 @@ function renderGeckos() {
 }
 function renderGeckosBody() {
   const v = $("#g-body"), f = S.f;
-  const base = f.archived ? [...S.geckos.values(), ...(S.archive || [])] : [...S.geckos.values()];
-  const byUse = filterGeckos(base, { use: f.use, query: f.q });
+  /* sold geckos are always one tap away (the 販売済 chip), newest sale first */
+  const sold = f.archived ? [] : filterGeckos(S.sales || [], { use: f.use, query: f.q });
+  const base = f.archived ? [...S.geckos.values(), ...(S.archive || [])] : f.status === "販売済" ? [...S.geckos.values(), ...sold] : [...S.geckos.values()];
+  const byUse = f.status === "販売済" && !f.archived ? filterGeckos([...S.geckos.values()], { use: f.use, query: f.q }) : filterGeckos(base, { use: f.use, query: f.q });
   const counts = {}; for (const g of byUse) counts[g.status] = (counts[g.status] || 0) + 1;
-  const list = sortGeckos(filterGeckos(byUse, { status: f.status }));
+  if (!f.archived) counts["販売済"] = sold.length;
+  let list = filterGeckos(f.status === "販売済" && !f.archived ? sold : byUse, { status: f.status });
+  list = f.status === "販売済" ? list.sort((a, b) => String(b.soldDate || "").localeCompare(String(a.soldDate || "")) || b.id.localeCompare(a.id)) : sortGeckos(list);
   S.lastList = list;
-  const st = STATUSES.filter(s => counts[s] || s === f.status);
+  const st = STATUSES.filter(s => counts[s] || s === f.status || s === "販売済");
   v.innerHTML = `
     <div class="filters">
       <div class="chips" role="group" aria-label="用途">${[["all", "すべて"], ["breeding", "繁殖用"], ["sale", "販売用"]].map(([k, l]) => `<button class="chip" data-use="${k}" aria-pressed="${f.use === k}">${l}</button>`).join("")}</div>
@@ -4268,10 +4299,12 @@ let archiveAsked = false;
 function renderStock() {
   const v = $("#v-stock"), views = stockViews();
   if (views.some(x => x.scope === "all") && !S.archive && S.db && !archiveAsked) { archiveAsked = true; loadArchive().then(renderStock).catch(() => {}); }
+  if (!S.sales && S.db && !renderStock.asked) { renderStock.asked = true; refreshSales(); }
   const boxes = views.filter(x => x.kind === "box"), tables = views.filter(x => x.kind === "table");
   v.innerHTML = `
-    <div class="botacts" style="margin-top:0"><button class="btn primary abtn" data-act="packing">${QR_ICON}パッキング${packItems().length ? `（${packItems().length}）` : ""}</button><button class="btn abtn" data-act="wholesale">${QR_ICON}卸モード${catalogItems().length ? `（${catalogItems().length}）` : ""}</button></div>
+    <div class="botacts" style="margin-top:0"><button class="btn primary abtn" data-act="packing">${QR_ICON}パッキング${packItems().length ? `（${packItems().length}）` : ""}</button><button class="btn abtn" data-act="modes">モード（卸・販売・注文）</button></div>
     ${offlineBanner()}
+    ${salesPanelHTML()}
     <h3 class="sec-h">サマリー <span class="count">タップで条件を確認</span></h3>
     <div class="tiles">${boxes.map(boxHTML).join("")}<button class="tile addt" data-act="ask-box">＋ チャットで追加</button></div>
     ${tables.map(tableHTML).join("")}
@@ -4622,7 +4655,7 @@ document.addEventListener("click", e => {
   const ex = t.closest("[data-ex]"); if (ex) { const i = $("#chat-in"); i.value = ex.dataset.ex; autosize(); i.focus(); return; }
   const exs = t.closest("[data-exsend]"); if (exs) { const q = exs.dataset.exsend; chatCtx = null; send(q).then(renderTier); return; }
   const use = t.closest("[data-use]"); if (use) { S.f.use = use.dataset.use; S.f.status = ""; renderGeckosBody(); return; }
-  const st = t.closest("[data-st]"); if (st) { S.f.status = st.dataset.st; renderGeckosBody(); return; }
+  const st = t.closest("[data-st]"); if (st) { S.f.status = st.dataset.st; if (S.f.status === "販売済" && !S.sales) refreshSales().then(renderGeckosBody); renderGeckosBody(); return; }
   const vw = t.closest("[data-view]"); if (vw) { viewSheet(vw.dataset.view); return; }
   const tr = t.closest("[data-tier]"); if (tr) { tier = tr.dataset.tier; setPref("tier", tier); renderTier(); return; }
   const act = t.closest("[data-act]"); if (!act) return;
@@ -4636,6 +4669,10 @@ document.addEventListener("click", e => {
   else if (a === "settings") settingsSheet(act.dataset.sec);
   else if (a === "packing") packingSheet();
   else if (a === "wholesale") wholesaleSheet();
+  else if (a === "modes") modeMenu();
+  else if (a === "sales") soldSheet();
+  else if (a === "sales-events") soldSheet({ tab: "events" });
+  else if (a === "sales-ev") soldSheet({ ev: act.dataset.evk });
   else if (a === "ask-box") askInChat("在庫サマリーにボックスを追加: ");
   else if (a === "ask-table") askInChat("在庫に表を追加: ");
   else if (a === "queue-list") { const ids = (S.lastList || []).slice(0, MAX_LABELS).map(g => g.id); queueAdd(ids, "sticker").then(() => toast(ids.length + "頭のシールを印刷待ちに追加しました"), x => toast(x.message)); }
@@ -4651,7 +4688,7 @@ $("#chat-in").addEventListener("keydown", e => { if (e.key === "Enter" && (e.met
 document.addEventListener("keydown", e => { if (e.key === "Escape" && sheets.length) closeSheet(sheets[sheets.length - 1]); });
 
 /* ---------- app: budget / backup strip, settings, automatic backup, updates ---------- */
-const APP_VERSION = "2026-11-26-5";
+const APP_VERSION = "2026-11-26-6";
 const fmtGB = b => (b / 1e9).toFixed(b >= 1e10 ? 0 : 1) + "GB";
 const fmtTime = t => t ? new Date(t).toLocaleString("ja-JP", { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" }) : "まだありません";
 function setPill(el, { val, ratio, state }) {
